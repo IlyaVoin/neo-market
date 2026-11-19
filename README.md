@@ -1,0 +1,229 @@
+# NeoMarket B2B — API создания товара
+
+Реализация endpoint `POST /api/v1/products` для кабинета продавца NeoMarket B2B.
+
+## Стек
+
+- **FastAPI** (ASGI, Pydantic v2 схемы)
+- **SQLAlchemy 2.0** + **asyncpg** (async сессии, UUID как PostgreSQL `uuid`)
+- **Alembic** — миграции БД
+- **Pytest** + **pytest-asyncio** + **httpx** (AsyncClient, ASGITransport)
+- **Docker** + **docker-compose** (приложение + PostgreSQL 15)
+- **JWT**: `python-jose` для валидации токенов (`sub` = seller_id)
+
+## Структура проекта
+
+```
+neo-market/
+├── src/
+│   ├── main.py                 # FastAPI приложение, регистрация роутера
+│   ├── config.py               # Настройки (env, DATABASE_URL, JWT_SECRET)
+│   ├── database.py             # Engine, sessionmaker, Base
+│   ├── auth/
+│   │   └── dependencies.py     # get_current_seller_id (Bearer → claims["sub"])
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── seller.py           # Seller (заготовка для auth)
+│   │   ├── category.py         # Category
+│   │   ├── product.py          # Product, ProductImage, ProductCharacteristic
+│   │   └── enums.py            # ProductStatus
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── product.py          # ProductCreate, ProductResponse
+│   │   └── errors.py           # Error (code, message, details?)
+│   ├── routes/
+│   │   ├── __init__.py
+│   │   └── products.py         # POST /api/v1/products
+│   └── services/
+│       └── product_service.py  # Создание товара + валидация категории
+├── migrations/
+│   ├── env.py
+│   └── versions/
+│       ├── 001_create_categories.py
+│       └── 002_create_products.py
+├── tests/
+│   ├── conftest.py             # Фикстуры: in-memory БД, сессия, JWT
+│   ├── test_products.py        # 4 канонических теста (DoD)
+│   └── test_validation.py      # 5 дополнительных тестов валидации
+├── Dockerfile
+├── docker-compose.yml
+├── pyproject.toml
+├── requirements.txt
+├── alembic.ini
+└── README.md
+```
+
+## Быстрый старт
+
+### Docker Compose
+
+```bash
+docker-compose up --build
+```
+
+Приложение:
+1. Ждёт готовности PostgreSQL (healthcheck)
+2. Запускает миграции Alembic (`alembic upgrade head`)
+3. Стартует на `http://0.0.0.0:8000`
+
+### Локальная разработка
+
+```bash
+# Установка зависимостей
+pip install -r requirements.txt
+
+# Переменные окружения
+export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/neomarket"
+export JWT_SECRET="your-secret-key"
+
+# Миграции
+alembic upgrade head
+
+# Запуск сервера
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+## Запуск тестов
+
+```bash
+# Все тесты
+pytest tests/ -v
+
+# Только канонические тесты DoD
+pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category" -v
+
+# С покрытием
+pytest tests/ --cov=src --cov-report=term-missing
+```
+
+## API Endpoint
+
+### Создание товара
+
+**POST** `/api/v1/products`
+
+**Headers:**
+- `Authorization: Bearer <JWT_TOKEN>`
+- `Content-Type: application/json`
+
+**Тело запроса:**
+```json
+{
+  "title": "iPhone 15 Pro Max",
+  "description": "Последний смартфон Apple с чипом A17 Pro",
+  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "images": [
+    {"url": "/s3/products/iphone15promax_1.jpg", "ordering": 0}
+  ],
+  "characteristics": [
+    {"name": "Brand", "value": "Apple"},
+    {"name": "Color", "value": "Natural Titanium"}
+  ]
+}
+```
+
+**Обязательные поля:** `title` (1-255), `description` (1-5000), `category_id` (UUID), `images` (мин. 1 элемент с `url` и `ordering`).
+
+**Успешный ответ (201):**
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "seller_id": "seller-uuid-from-jwt-sub",
+  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "title": "iPhone 15 Pro Max",
+  "slug": "iphone-15-pro-max",
+  "description": "Последний смартфон Apple с чипом A17 Pro",
+  "status": "CREATED",
+  "deleted": false,
+  "blocking_reason_id": null,
+  "moderator_comment": null,
+  "images": [
+    {"id": "img-uuid", "url": "/s3/products/iphone15promax_1.jpg", "ordering": 0}
+  ],
+  "characteristics": [
+    {"id": "char-uuid", "name": "Brand", "value": "Apple"},
+    {"id": "char-uuid", "name": "Color", "value": "Natural Titanium"}
+  ],
+  "skus": [],
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Ошибки:**
+
+| Ситуация | Код | Тело |
+|----------|-----|------|
+| Пустой title | 400 | `{"code":"INVALID_REQUEST","message":"title is required"}` |
+| Title > 255 символов | 400 | `{"code":"INVALID_REQUEST","message":"title must be 1-255 characters"}` |
+| Нет images / пустой массив | 400 | `{"code":"INVALID_REQUEST","message":"At least one image is required"}` |
+| Невалидный UUID category_id | 400 | `{"code":"INVALID_REQUEST","message":"category_id must be a valid UUID"}` |
+| Категория не найдена | 400 | `{"code":"INVALID_REQUEST","message":"Category not found"}` |
+| Невалидный/отсутствующий JWT | 401 | `{"code":"UNAUTHORIZED","message":"..."}` |
+
+> **Важно:** `seller_id` **всегда** берётся из `claims["sub"]` в JWT, никогда из тела запроса (защита от IDOR).
+
+## Пример cURL
+
+```bash
+# Генерация тестового токена (замените на реальный JWT от auth-сервиса)
+TOKEN=$(python -c "
+import jwt, uuid
+print(jwt.encode({'sub': str(uuid.uuid4())}, 'dev-secret-change-in-production', algorithm='HS256'))
+")
+
+curl -X POST http://localhost:8000/api/v1/products \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Test Product",
+    "description": "Test Description",
+    "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "images": [{"url": "/s3/test.jpg", "ordering": 0}]
+  }'
+```
+
+## Схема БД
+
+### Таблицы
+
+- **sellers** — `id (PK)`, `email`, `created_at`
+- **categories** — `id (PK)`, `name`, `parent_id (FK)`, `is_active`, `level`, `path`, `created_at`
+- **products** — `id (PK)`, `seller_id (FK)`, `category_id (FK)`, `title`, `slug`, `description`, `status`, `deleted`, `blocking_reason_id`, `moderator_comment`, `created_at`, `updated_at`
+- **product_images** — `id (PK)`, `product_id (FK)`, `url`, `ordering`
+- **product_characteristics** — `id (PK)`, `product_id (FK)`, `name`, `value`
+
+### ADR: Хранение характеристик
+
+**Решение:** Отдельная таблица `product_characteristics` (нормализованная 3NF).
+
+**Рассмотренные альтернативы:**
+1. **JSONB в таблице Product** — простота, но фильтрация требует кастомных операторов (`@>`, `jsonb_path_ops`), индексы работают неэффективно.
+2. **Отдельная таблица CharacteristicValue** (выбрано) — нормализация 3NF, индексы по `(product_id, name)`, простая фильтрация через JOIN.
+3. **EAV-схема** (`entity_id`, `attribute_name`, `value`) — гибкость, но сложные self-join'ы при фильтрации, деградация производительности.
+
+**Критерии выбора:**
+- **Сложность запросов при фильтрации** — минимизирована: простой `JOIN` + `WHERE name = ... AND value = ...`, стандартные индексы работают эффективно.
+- **Удобство добавления новых характеристик** — вставка новых пар `(name, value)` не требует изменения схемы; у JSONB нет строгой схемы, у EAV — нужно управлять атрибутами отдельно.
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/neomarket` | Async строка подключения к PostgreSQL |
+| `JWT_SECRET` | `dev-secret-change-in-production` | Секрет для подписи JWT |
+| `JWT_ALGORITHM` | `HS256` | Алгоритм JWT |
+| `JWT_EXPIRES_MINUTES` | `30` | Время жизни токена |
+| `APP_HOST` | `0.0.0.0` | Хост сервера |
+| `APP_PORT` | `8000` | Порт сервера |
+| `DEBUG` | `false` | Режим отладки (SQL echo) |
+
+## Definition of Done (DoD)
+
+- [x] `pytest tests/ -v` — все 4 канонических + 5 дополнительных тестов проходят
+- [x] `pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category"` — канонические тесты проходят
+- [x] Приложение стартует в `docker-compose up`, `POST /api/v1/products` возвращает 201 со статусом `CREATED`
+- [x] Нет предупреждений pytest
+- [x] `seller_id` берётся только из JWT `sub` (защита от IDOR)
+- [x] Товар без SKU не уходит на модерацию (ответственность US-B2B-02)
+- [x] ADR в описании PR с обоснованием выбора хранения характеристик
