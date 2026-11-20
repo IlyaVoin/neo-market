@@ -1,6 +1,9 @@
-# NeoMarket B2B — API создания товара и SKU
+# NeoMarket B2B — API товара и SKU
 
-Реализация endpoints `POST /api/v1/products` и `POST /api/v1/skus` для кабинета продавца NeoMarket B2B.
+Реализация endpoints для кабинета продавца NeoMarket B2B:
+- `POST /api/v1/products` (B2B-1: Создание товара)
+- `POST /api/v1/skus` (B2B-2: Создание SKU)
+- `GET /api/v1/products/{id}` (B2B-5: Просмотр карточки товара)
 
 ## Стек
 
@@ -20,7 +23,7 @@ neo-market/
 │   ├── config.py               # Настройки (env, DATABASE_URL, JWT_SECRET)
 │   ├── database.py             # Engine, sessionmaker, Base
 │   ├── auth/
-│   │   └── dependencies.py     # get_current_seller_id (Bearer → claims["sub"])
+│   │   └── dependencies.py     # get_current_seller_id, get_optional_seller_id
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── seller.py           # Seller (заготовка для auth)
@@ -36,7 +39,7 @@ neo-market/
 │   │   └── errors.py           # Error (code, message, details?)
 │   ├── routes/
 │   │   ├── __init__.py
-│   │   ├── products.py         # POST /api/v1/products
+│   │   ├── products.py         # POST /api/v1/products, GET /api/v1/products/{id}
 │   │   └── skus.py             # POST /api/v1/skus
 │   └── services/
 │       ├── __init__.py
@@ -98,8 +101,11 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 # Все тесты
 pytest tests/ -v
 
-# Только канонические тесты DoD
-pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category" -v
+# Kanon-тесты: товары (B2B-1 + B2B-5)
+pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category or get_moderated or get_blocked or get_others or get_nonexistent" -v
+
+# Kanon-тесты: SKU (B2B-2)
+pytest tests/test_skus.py -k "first_sku_transitions_product_to_on_moderation or first_sku_emits_created_event_to_moderation or second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited or add_sku_to_hard_blocked_returns_403 or missing_image_returns_400" -v
 
 # С покрытием
 pytest tests/ --cov=src --cov-report=term-missing
@@ -275,6 +281,84 @@ curl -X POST http://localhost:8000/api/v1/skus \
   }'
 ```
 
+### Просмотр карточки товара
+
+**GET** `/api/v1/products/{product_id}`
+
+**Headers:**
+- `Authorization: Bearer <JWT_TOKEN>` (seller-режим, опционален)
+- `X-Service-Key: <KEY>` (service-режим, опционален)
+
+Два режима доступа:
+- **Seller (JWT)** — возвращает полный payload включая `cost_price` и `reserved_quantity` у SKU.
+- **Service (`X-Service-Key`)** — если ключ совпадает с `settings.b2b_to_mod_key` или `settings.b2b_to_b2c_key`, ownership не проверяется, а `cost_price`/`reserved_quantity` возвращаются как `null`.
+
+**Успешный ответ (200):** `ProductDetailResponse`
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "seller_id": "seller-uuid",
+  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "title": "iPhone 15 Pro Max",
+  "slug": "iphone-15-pro-max",
+  "description": "Latest Apple smartphone",
+  "status": "MODERATED",
+  "deleted": false,
+  "blocking_reason_id": null,
+  "moderator_comment": null,
+  "blocked": false,
+  "blocking_reason": null,
+  "field_reports": [],
+  "images": [
+    {"id": "img-uuid", "url": "/s3/iphone.jpg", "ordering": 0}
+  ],
+  "characteristics": [
+    {"id": "char-uuid", "name": "Brand", "value": "Apple"}
+  ],
+  "skus": [
+    {
+      "id": "sku-uuid",
+      "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "256GB",
+      "price": 120000,
+      "cost_price": 95000,
+      "discount": 5,
+      "image": "/s3/iphone.jpg",
+      "active_quantity": 10,
+      "reserved_quantity": 2,
+      "characteristics": [],
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Ошибки:**
+
+| Ситуация | Код | Тело |
+|----------|-----|------|
+| Нет Authorization и нет X-Service-Key | 401 | `{"code":"UNAUTHORIZED","message":"Authorization header is missing"}` |
+| Чужой товар (seller-режим) | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
+| Товар не существует | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
+| Невалидный UUID | 400 | `{"code":"INVALID_REQUEST","message":"..."}` |
+
+> **Важно:** при чужом товаре в seller-режиме возвращается **404, не 403** (защита от перебора ID). `blocking_reason` собирается из `blocking_reason_id` + `moderator_comment`: `title = moderator_comment или status.value`, `comment = moderator_comment`. `field_reports` — пустой массив для MVP. `blocked = true` только для статусов `BLOCKED` / `HARD_BLOCKED`.
+
+**Пример cURL (seller-режим):**
+```bash
+curl -X GET http://localhost:8000/api/v1/products/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Пример cURL (service-режим):**
+```bash
+curl -X GET http://localhost:8000/api/v1/products/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  -H "X-Service-Key: dev-b2b-to-mod-key"
+```
+
 ## Схема БД
 
 ### Таблицы
@@ -301,6 +385,19 @@ curl -X POST http://localhost:8000/api/v1/skus \
 - **Сложность запросов при фильтрации** — минимизирована: простой `JOIN` + `WHERE name = ... AND value = ...`, стандартные индексы работают эффективно.
 - **Удобство добавления новых характеристик** — вставка новых пар `(name, value)` не требует изменения схемы; у JSONB нет строгой схемы, у EAV — нужно управлять атрибутами отдельно.
 
+### ADR: Два режима доступа к GET /products/{id}
+
+**Решение:** Один view с проверкой `X-Service-Key` в начале обработчика. При отсутствии/неверном ключе используется seller-режим (JWT). Service-режим (Moderation/B2C) — ownership не проверяется, `cost_price`/`reserved_quantity` возвращаются как `null`.
+
+**Рассмотренные альтернативы:**
+1. Один view с проверкой `X-Service-Key` (выбрано).
+2. Два отдельных view (один с JWT, второй с `X-Service-Key` на другом пути/теге).
+3. Отдельный permission-класс/dependencies для переключения режима.
+
+**Критерии выбора:**
+- **Читаемость кода** — единый endpoint, логика режима в одном месте, проще поддерживать OpenAPI (один path).
+- **Риск утечки чувствительных полей** — явная проверка `X-Service-Key` в начале обработчика; два view удваивают код и риск рассинхронизации схем.
+
 ## Переменные окружения
 
 | Переменная | По умолчанию | Описание |
@@ -319,12 +416,24 @@ curl -X POST http://localhost:8000/api/v1/skus \
 
 ## Definition of Done (DoD)
 
-- [x] `pytest tests/ -v` — все 4 канонических (товары) + 10 канонических (SKU) + 5 дополнительных тестов проходят
+### B2B-1: Создание товара
 - [x] `pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category"` — канонические тесты товаров проходят
+- [x] `seller_id` берётся только из JWT `sub` (защита от IDOR)
+
+### B2B-2: Создание SKU
 - [x] `pytest tests/test_skus.py -k "first_sku_transitions_product_to_on_moderation or first_sku_emits_created_event_to_moderation or second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited or add_sku_to_hard_blocked_returns_403 or missing_image_returns_400"` — канонические тесты SKU проходят
+- [x] Товар без SKU не уходит на модерацию (ответственность B2B-2)
+- [x] ADR: outbox-паттерн для событий в Moderation
+
+### B2B-5: Просмотр карточки товара
+- [x] `pytest tests/test_products.py -k "get_moderated or get_blocked or get_others or get_nonexistent"` — зелёный
+- [x] Чужой товар → 404 (не 403)
+- [x] `cost_price`/`reserved_quantity` только в seller-режиме
+- [x] ADR: два режима доступа (один view с `X-Service-Key`)
+
+### Общее
+- [x] `pytest tests/ -v` — все 23 теста проходят
 - [x] Приложение стартует в `docker-compose up`, `POST /api/v1/products` возвращает 201 со статусом `CREATED`, `POST /api/v1/skus` возвращает 201
 - [x] Нет предупреждений pytest
-- [x] `seller_id` берётся только из JWT `sub` (защита от IDOR)
-- [x] Товар без SKU не уходит на модерацию (ответственность B2B-2)
 - [x] ADR в описании PR с обоснованием выбора хранения характеристик
 - [x] ADR в описании PR с обоснованием выбора outbox-паттерна для событий

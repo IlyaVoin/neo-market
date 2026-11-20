@@ -71,3 +71,67 @@ class ProductResponse(BaseModel):
     skus: list = []
     created_at: datetime
     updated_at: datetime
+
+
+class BlockingReason(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID | None = None
+    title: str
+    comment: str | None = None
+
+
+class FieldReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    field_name: str
+    sku_id: uuid.UUID | None = None
+    comment: str | None = None
+
+
+class SKUCharacteristicResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    value: str
+
+
+class SKUDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    product_id: uuid.UUID
+    name: str
+    price: int
+    cost_price: int | None = None
+    discount: int
+    image: str
+    active_quantity: int
+    reserved_quantity: int | None = None
+    characteristics: list[SKUCharacteristicResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProductDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID
+    title: str
+    slug: str | None
+    description: str
+    status: str
+    deleted: bool
+    blocking_reason_id: uuid.UUID | None
+    moderator_comment: str | None
+    blocked: bool
+    blocking_reason: BlockingReason | None = None
+    field_reports: list[FieldReport] = []
+    images: list[ProductImageResponse]
+    characteristics: list[ProductCharacteristicResponse]
+    skus: list[SKUDetailResponse] = []
+    created_at: datetime
+    updated_at: datetime
