@@ -23,5 +23,23 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, description="Application port")
     debug: bool = Field(default=False, description="Debug mode")
 
+    # External service configuration
+    moderation_service_url: str = Field(
+        default="http://moderation:8000",
+        description="Moderation service URL",
+    )
+    b2b_to_mod_key: str = Field(
+        default="dev-b2b-to-mod-key",
+        description="Service key for B2B to Moderation communication",
+    )
+    b2c_service_url: str = Field(
+        default="http://b2c:8000",
+        description="B2C service URL",
+    )
+    b2b_to_b2c_key: str = Field(
+        default="dev-b2b-to-b2c-key",
+        description="Service key for B2B to B2C communication",
+    )
+
 
 settings = Settings()

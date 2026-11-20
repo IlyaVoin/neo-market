@@ -1,6 +1,6 @@
-# NeoMarket B2B — API создания товара
+# NeoMarket B2B — API создания товара и SKU
 
-Реализация endpoint `POST /api/v1/products` для кабинета продавца NeoMarket B2B.
+Реализация endpoints `POST /api/v1/products` и `POST /api/v1/skus` для кабинета продавца NeoMarket B2B.
 
 ## Стек
 
@@ -16,7 +16,7 @@
 ```
 neo-market/
 ├── src/
-│   ├── main.py                 # FastAPI приложение, регистрация роутера
+│   ├── main.py                 # FastAPI приложение, регистрация роутеров
 │   ├── config.py               # Настройки (env, DATABASE_URL, JWT_SECRET)
 │   ├── database.py             # Engine, sessionmaker, Base
 │   ├── auth/
@@ -26,24 +26,33 @@ neo-market/
 │   │   ├── seller.py           # Seller (заготовка для auth)
 │   │   ├── category.py         # Category
 │   │   ├── product.py          # Product, ProductImage, ProductCharacteristic
+│   │   ├── sku.py              # SKU, SKUCharacteristic
+│   │   ├── outbox.py           # OutboxEvent
 │   │   └── enums.py            # ProductStatus
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── product.py          # ProductCreate, ProductResponse
+│   │   ├── sku.py              # SKUCreate, SKUResponse
 │   │   └── errors.py           # Error (code, message, details?)
 │   ├── routes/
 │   │   ├── __init__.py
-│   │   └── products.py         # POST /api/v1/products
+│   │   ├── products.py         # POST /api/v1/products
+│   │   └── skus.py             # POST /api/v1/skus
 │   └── services/
-│       └── product_service.py  # Создание товара + валидация категории
+│       ├── __init__.py
+│       ├── product_service.py  # Создание товара + валидация категории
+│       ├── sku_service.py      # Создание SKU + переход статуса + события
+│       └── event_publisher.py  # Outbox-паттерн для событий
 ├── migrations/
 │   ├── env.py
 │   └── versions/
 │       ├── 001_create_categories.py
-│       └── 002_create_products.py
+│       ├── 002_create_products.py
+│       └── 003_create_skus_and_outbox.py
 ├── tests/
 │   ├── conftest.py             # Фикстуры: in-memory БД, сессия, JWT
 │   ├── test_products.py        # 4 канонических теста (DoD)
+│   ├── test_skus.py            # 10 канонических тестов SKU (DoD)
 │   └── test_validation.py      # 5 дополнительных тестов валидации
 ├── Dockerfile
 ├── docker-compose.yml
@@ -183,6 +192,89 @@ curl -X POST http://localhost:8000/api/v1/products \
   }'
 ```
 
+### Создание SKU
+
+**POST** `/api/v1/skus`
+
+**Headers:**
+- `Authorization: Bearer <JWT_TOKEN>`
+- `Content-Type: application/json`
+
+**Тело запроса:**
+```json
+{
+  "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "256GB Black",
+  "price": 12999000,
+  "cost_price": 9500000,
+  "discount": 0,
+  "image": "/s3/iphone15-black-256.jpg",
+  "characteristics": [
+    {"name": "Цвет", "value": "Чёрный"},
+    {"name": "Объём памяти", "value": "256 ГБ"}
+  ]
+}
+```
+
+**Обязательные поля:** `product_id` (UUID), `name` (1-255), `price` (>0 копеек), `cost_price` (>0 копеек), `image` (URL).
+
+**Успешный ответ (201):**
+```json
+{
+  "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "256GB Black",
+  "price": 12999000,
+  "cost_price": 9500000,
+  "discount": 0,
+  "image": "/s3/iphone15-black-256.jpg",
+  "active_quantity": 0,
+  "reserved_quantity": 0,
+  "characteristics": [
+    {"id": "char-uuid", "name": "Цвет", "value": "Чёрный"},
+    {"id": "char-uuid", "name": "Объём памяти", "value": "256 ГБ"}
+  ],
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Ошибки:**
+
+| Ситуация | Код | Тело |
+|----------|-----|------|
+| product_id не существует | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
+| Товар в статусе HARD_BLOCKED | 403 | `{"code":"FORBIDDEN","message":"Cannot add SKU to hard-blocked product"}` |
+| price <= 0 | 400 | `{"code":"INVALID_REQUEST","message":"price must be a positive integer (kopecks)"}` |
+| cost_price <= 0 | 400 | `{"code":"INVALID_REQUEST","message":"cost_price must be a positive integer (kopecks)"}` |
+| Пустой name | 400 | `{"code":"INVALID_REQUEST","message":"name is required"}` |
+| Нет image | 400 | `{"code":"INVALID_REQUEST","message":"image is required"}` |
+| Невалидный/отсутствующий JWT | 401 | `{"code":"UNAUTHORIZED","message":"..."}` |
+
+> **Важно:** `seller_id` проверяется через владение товаром (JWT `sub` == `product.seller_id`). Продавец не может добавить SKU к чужому товару.
+
+**Побочные эффекты (по канону B2B-2):**
+- **Первый SKU для товара CREATED**: товар переходит в `ON_MODERATION`, отправляется событие `CREATED` в Moderation
+- **Дополнительный SKU для MODERATED/BLOCKED**: товар переходит в `ON_MODERATION`, отправляется событие `EDITED` в Moderation
+- События идут через outbox-паттерн с `X-Service-Key` и `idempotency_key`
+
+### Пример cURL для SKU
+
+```bash
+curl -X POST http://localhost:8000/api/v1/skus \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "256GB Black",
+    "price": 12999000,
+    "cost_price": 9500000,
+    "discount": 0,
+    "image": "/s3/iphone15-black-256.jpg",
+    "characteristics": []
+  }'
+```
+
 ## Схема БД
 
 ### Таблицы
@@ -192,6 +284,9 @@ curl -X POST http://localhost:8000/api/v1/products \
 - **products** — `id (PK)`, `seller_id (FK)`, `category_id (FK)`, `title`, `slug`, `description`, `status`, `deleted`, `blocking_reason_id`, `moderator_comment`, `created_at`, `updated_at`
 - **product_images** — `id (PK)`, `product_id (FK)`, `url`, `ordering`
 - **product_characteristics** — `id (PK)`, `product_id (FK)`, `name`, `value`
+- **skus** — `id (PK)`, `product_id (FK)`, `name`, `price`, `cost_price`, `discount`, `image`, `active_quantity`, `reserved_quantity`, `created_at`, `updated_at`
+- **sku_characteristics** — `id (PK)`, `sku_id (FK)`, `name`, `value`
+- **outbox_events** — `id (PK)`, `event_type`, `aggregate_id`, `payload (JSONB)`, `service_key`, `target_url`, `created_at`, `processed_at`, `retry_count`
 
 ### ADR: Хранение характеристик
 
@@ -217,13 +312,19 @@ curl -X POST http://localhost:8000/api/v1/products \
 | `APP_HOST` | `0.0.0.0` | Хост сервера |
 | `APP_PORT` | `8000` | Порт сервера |
 | `DEBUG` | `false` | Режим отладки (SQL echo) |
+| `MODERATION_SERVICE_URL` | `http://moderation:8000` | URL сервиса Moderation |
+| `B2B_TO_MOD_KEY` | `dev-b2b-to-mod-key` | Service key для B2B→Moderation |
+| `B2C_SERVICE_URL` | `http://b2c:8000` | URL сервиса B2C |
+| `B2B_TO_B2C_KEY` | `dev-b2b-to-b2c-key` | Service key для B2B→B2C |
 
 ## Definition of Done (DoD)
 
-- [x] `pytest tests/ -v` — все 4 канонических + 5 дополнительных тестов проходят
-- [x] `pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category"` — канонические тесты проходят
-- [x] Приложение стартует в `docker-compose up`, `POST /api/v1/products` возвращает 201 со статусом `CREATED`
+- [x] `pytest tests/ -v` — все 4 канонических (товары) + 10 канонических (SKU) + 5 дополнительных тестов проходят
+- [x] `pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category"` — канонические тесты товаров проходят
+- [x] `pytest tests/test_skus.py -k "first_sku_transitions_product_to_on_moderation or first_sku_emits_created_event_to_moderation or second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited or add_sku_to_hard_blocked_returns_403 or missing_image_returns_400"` — канонические тесты SKU проходят
+- [x] Приложение стартует в `docker-compose up`, `POST /api/v1/products` возвращает 201 со статусом `CREATED`, `POST /api/v1/skus` возвращает 201
 - [x] Нет предупреждений pytest
 - [x] `seller_id` берётся только из JWT `sub` (защита от IDOR)
-- [x] Товар без SKU не уходит на модерацию (ответственность US-B2B-02)
+- [x] Товар без SKU не уходит на модерацию (ответственность B2B-2)
 - [x] ADR в описании PR с обоснованием выбора хранения характеристик
+- [x] ADR в описании PR с обоснованием выбора outbox-паттерна для событий

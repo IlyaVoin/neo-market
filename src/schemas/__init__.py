@@ -7,6 +7,7 @@ from src.schemas.product import (
     ProductImageResponse,
     ProductResponse,
 )
+from src.schemas.sku import SKUCreate, SKUResponse, SKUCharacteristicCreate, SKUCharacteristicResponse
 
 __all__ = [
     "ProductCreate",
@@ -16,4 +17,8 @@ __all__ = [
     "ProductImageResponse",
     "ProductCharacteristicResponse",
     "Error",
+    "SKUCreate",
+    "SKUResponse",
+    "SKUCharacteristicCreate",
+    "SKUCharacteristicResponse",
 ]
