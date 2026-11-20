@@ -22,6 +22,7 @@ from src.models.enums import ProductStatus
 if TYPE_CHECKING:
     from src.models.category import Category
     from src.models.seller import Seller
+    from src.models.sku import SKU
 
 
 class Product(Base):
@@ -78,6 +79,11 @@ class Product(Base):
     )
     characteristics: Mapped[list["ProductCharacteristic"]] = relationship(
         "ProductCharacteristic",
+        back_populates="product",
+        cascade="all, delete-orphan",
+    )
+    skus: Mapped[list["SKU"]] = relationship(
+        "SKU",
         back_populates="product",
         cascade="all, delete-orphan",
     )
