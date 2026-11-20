@@ -35,3 +35,24 @@ async def get_current_seller_id(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "UNAUTHORIZED", "message": "Invalid or expired token"},
         )
+
+
+async def get_optional_seller_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> str | None:
+    if credentials is None:
+        return None
+
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        seller_id = payload.get("sub")
+        if seller_id is None:
+            return None
+        return seller_id
+    except JWTError:
+        return None
