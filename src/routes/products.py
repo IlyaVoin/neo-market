@@ -1,16 +1,76 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_seller_id, get_optional_seller_id
 from src.config import settings
 from src.database import get_session
 from src.schemas.errors import Error
-from src.schemas.product import ProductCreate, ProductDetailResponse, ProductResponse
+from src.schemas.product import (
+    ProductCreate,
+    ProductDetailResponse,
+    ProductPublicPaginatedResponse,
+    ProductResponse,
+)
 from src.services.product_service import ProductService
 
 router = APIRouter(prefix="/api/v1/products", tags=["products"])
+
+
+def _parse_ids_param(ids: str | None) -> list[uuid.UUID] | None:
+    if not ids:
+        return None
+    parsed: list[uuid.UUID] = []
+    for raw in ids.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parsed.append(uuid.UUID(raw))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_REQUEST", "message": "ids must be a valid comma-separated UUID list"},
+            )
+    return parsed or None
+
+
+@router.get(
+    "",
+    response_model=ProductPublicPaginatedResponse,
+    responses={
+        200: {"model": ProductPublicPaginatedResponse, "description": "B2C catalog list"},
+        400: {"model": Error, "description": "Invalid request"},
+        401: {"model": Error, "description": "Unauthorized"},
+    },
+)
+async def list_products(
+    session: AsyncSession = Depends(get_session),
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    ids: str | None = Query(default=None, description="Comma-separated UUID list for batch query"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ProductPublicPaginatedResponse:
+    if x_service_key != settings.b2b_to_b2c_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Authorization header is missing"},
+        )
+
+    service = ProductService(session)
+    try:
+        result = await service.list_products(
+            service_key=x_service_key,
+            ids=_parse_ids_param(ids),
+            limit=limit,
+            offset=offset,
+        )
+        await session.commit()
+        return result
+    except ValueError:
+        await session.rollback()
+        raise
 
 
 @router.post(

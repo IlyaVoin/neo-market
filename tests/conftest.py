@@ -41,6 +41,12 @@ async def init_test_db():
 async def session() -> AsyncGenerator[AsyncSession, None]:
     async with TestAsyncSessionMaker() as session:
         yield session
+        await session.rollback()
+        await session.close()
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @pytest_asyncio.fixture

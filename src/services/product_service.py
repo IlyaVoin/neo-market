@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,9 +12,12 @@ from src.schemas.product import (
     ProductCreate,
     ProductDetailResponse,
     ProductImageResponse,
+    ProductPublicPaginatedResponse,
+    ProductPublicShortResponse,
     ProductResponse,
     SKUDetailResponse,
     SKUCharacteristicResponse,
+    SKUPublicResponse,
 )
 
 
@@ -108,6 +111,119 @@ class ProductService:
             raise ValueError("Product not found")
 
         return self._to_detail_response(product, service_key=service_key)
+
+    async def list_products(
+        self,
+        service_key: str,
+        ids: list[uuid.UUID] | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> ProductPublicPaginatedResponse:
+        """B2C catalog mode: returns MODERATED, non-deleted products with active_quantity > 0."""
+        from src.models.enums import ProductStatus
+
+        stmt = (
+            select(Product)
+            .join(Product.skus)
+            .options(
+                selectinload(Product.images),
+                selectinload(Product.characteristics),
+                selectinload(Product.skus).selectinload(SKU.characteristics),
+            )
+            .where(
+                Product.status == ProductStatus.MODERATED,
+                Product.deleted.is_(False),
+                SKU.active_quantity > 0,
+            )
+            .order_by(Product.created_at.desc())
+            .distinct()
+        )
+
+        if ids:
+            stmt = stmt.where(Product.id.in_(ids))
+
+        count_stmt = (
+            select(func.count(distinct(Product.id)))
+            .join(Product.skus)
+            .where(
+                Product.status == ProductStatus.MODERATED,
+                Product.deleted.is_(False),
+                SKU.active_quantity > 0,
+            )
+        )
+        if ids:
+            count_stmt = count_stmt.where(Product.id.in_(ids))
+        total_result = await self.session.execute(count_stmt)
+        total_count = total_result.scalar_one()
+
+        stmt = stmt.limit(limit).offset(offset)
+        result = await self.session.execute(stmt)
+        products = result.scalars().all()
+
+        items: list[ProductPublicShortResponse] = []
+        for product in products:
+            public_skus = [
+                self._to_public_sku(sku) for sku in product.skus if sku.active_quantity > 0
+            ]
+            if not public_skus:
+                continue
+            items.append(
+                ProductPublicShortResponse(
+                    id=product.id,
+                    category_id=product.category_id,
+                    title=product.title,
+                    slug=product.slug,
+                    description=product.description,
+                    status=product.status.value,
+                    images=[
+                        ProductImageResponse(
+                            id=img.id,
+                            url=img.url,
+                            ordering=img.ordering,
+                        )
+                        for img in product.images
+                    ],
+                    characteristics=[
+                        ProductCharacteristicResponse(
+                            id=char.id,
+                            name=char.name,
+                            value=char.value,
+                        )
+                        for char in product.characteristics
+                    ],
+                    skus=public_skus,
+                    created_at=product.created_at,
+                    updated_at=product.updated_at,
+                )
+            )
+
+        return ProductPublicPaginatedResponse(
+            items=items,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _to_public_sku(self, sku: SKU) -> SKUPublicResponse:
+        return SKUPublicResponse(
+            id=sku.id,
+            product_id=sku.product_id,
+            name=sku.name,
+            price=sku.price,
+            discount=sku.discount,
+            image=sku.image,
+            active_quantity=sku.active_quantity,
+            characteristics=[
+                SKUCharacteristicResponse(
+                    id=char.id,
+                    name=char.name,
+                    value=char.value,
+                )
+                for char in sku.characteristics
+            ],
+            created_at=sku.created_at,
+            updated_at=sku.updated_at,
+        )
 
     def _to_detail_response(
         self, product: Product, service_key: str | None = None

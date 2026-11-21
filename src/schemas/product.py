@@ -135,3 +135,49 @@ class ProductDetailResponse(BaseModel):
     skus: list[SKUDetailResponse] = []
     created_at: datetime
     updated_at: datetime
+
+
+class SKUPublicResponse(BaseModel):
+    """Витринный SKU — без cost_price и reserved_quantity (B2C catalog mode)."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    product_id: uuid.UUID
+    name: str
+    price: int
+    discount: int
+    image: str
+    active_quantity: int
+    characteristics: list[SKUCharacteristicResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProductPublicShortResponse(BaseModel):
+    """Публичная карточка товара для B2C-каталога (без чувствительных полей)."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    category_id: uuid.UUID
+    title: str
+    slug: str | None
+    description: str
+    status: str
+    images: list[ProductImageResponse]
+    characteristics: list[ProductCharacteristicResponse]
+    skus: list[SKUPublicResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProductPublicPaginatedResponse(BaseModel):
+    """Пагинированный ответ catalogs-режима GET /api/v1/products."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ProductPublicShortResponse]
+    total_count: int
+    limit: int
+    offset: int
