@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from jose import jwt
 
 from src.config import settings
-from src.models import SKU, Category, Product, ProductStatus
+from src.models import Category, Product, ProductStatus, SKU
 
 
 class TestCreateProduct:
@@ -251,3 +251,189 @@ def create_other_token() -> str:
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
+
+
+def _make_product(
+    session,
+    seller_id,
+    category_id,
+    *,
+    status=ProductStatus.MODERATED,
+    deleted=False,
+    title="Catalog Product",
+):
+    product = Product(
+        seller_id=seller_id,
+        category_id=category_id,
+        title=title,
+        description="Description",
+        status=status,
+        deleted=deleted,
+    )
+    session.add(product)
+    return product
+
+
+async def _flush(session):
+    await session.flush()
+
+
+def _make_sku(session, product, *, active_quantity=10, name="SKU", price=1000):
+    sku = SKU(
+        product_id=product.id,
+        name=name,
+        price=price,
+        cost_price=800,
+        discount=0,
+        image="/s3/sku.jpg",
+        active_quantity=active_quantity,
+        reserved_quantity=0,
+    )
+    session.add(sku)
+    return sku
+
+
+class TestCatalogB2C:
+    @pytest.mark.asyncio
+    async def test_catalog_returns_moderated_in_stock_products(
+        self,
+        client: AsyncClient,
+        session,
+        seller_id_from_token: uuid.UUID,
+        test_category: Category,
+    ):
+        p1 = _make_product(session, seller_id_from_token, test_category.id, title="In Stock")
+        await session.flush()
+        _make_sku(session, p1, active_quantity=5)
+        p2 = _make_product(
+            session, seller_id_from_token, test_category.id, status=ProductStatus.CREATED, title="Not Moderated"
+        )
+        await session.flush()
+        _make_sku(session, p2, active_quantity=5)
+        p3 = _make_product(
+            session, seller_id_from_token, test_category.id, deleted=True, title="Deleted"
+        )
+        await session.flush()
+        _make_sku(session, p3, active_quantity=5)
+        p4 = _make_product(
+            session, seller_id_from_token, test_category.id, title="Out of Stock"
+        )
+        await session.flush()
+        _make_sku(session, p4, active_quantity=0)
+        await session.commit()
+
+        response = await client.get(
+            "/api/v1/products",
+            headers={"X-Service-Key": settings.b2b_to_b2c_key},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        titles = [item["title"] for item in data["items"]]
+        assert titles == ["In Stock"]
+        assert data["total_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_catalog_excludes_hard_blocked(
+        self,
+        client: AsyncClient,
+        session,
+        seller_id_from_token: uuid.UUID,
+        test_category: Category,
+    ):
+        p_ok = _make_product(session, seller_id_from_token, test_category.id, title="Visible")
+        await session.flush()
+        _make_sku(session, p_ok, active_quantity=3)
+        p_blocked = _make_product(
+            session,
+            seller_id_from_token,
+            test_category.id,
+            status=ProductStatus.HARD_BLOCKED,
+            title="Hard Blocked",
+        )
+        await session.flush()
+        _make_sku(session, p_blocked, active_quantity=3)
+        await session.commit()
+
+        response = await client.get(
+            "/api/v1/products",
+            headers={"X-Service-Key": settings.b2b_to_b2c_key},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        titles = [item["title"] for item in data["items"]]
+        assert "Hard Blocked" not in titles
+        assert titles == ["Visible"]
+
+    @pytest.mark.asyncio
+    async def test_catalog_missing_service_key_returns_401(self, client: AsyncClient):
+        response = await client.get("/api/v1/products")
+        assert response.status_code == 401
+        data = response.json()
+        assert data["code"] == "UNAUTHORIZED"
+
+    @pytest.mark.asyncio
+    async def test_catalog_response_has_no_cost_price(
+        self,
+        client: AsyncClient,
+        session,
+        seller_id_from_token: uuid.UUID,
+        test_category: Category,
+    ):
+        p = _make_product(session, seller_id_from_token, test_category.id, title="Safe Product")
+        await session.flush()
+        _make_sku(session, p, active_quantity=2)
+        await session.commit()
+
+        response = await client.get(
+            "/api/v1/products",
+            headers={"X-Service-Key": settings.b2b_to_b2c_key},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["items"]) == 1
+        item = data["items"][0]
+        assert "cost_price" not in item
+        assert "reserved_quantity" not in item
+        assert "seller_id" not in item
+        assert "blocked" not in item
+        sku = item["skus"][0]
+        assert "cost_price" not in sku
+        assert "reserved_quantity" not in sku
+
+    @pytest.mark.asyncio
+    async def test_catalog_batch_ids_returns_visible_subset(
+        self,
+        client: AsyncClient,
+        session,
+        seller_id_from_token: uuid.UUID,
+        test_category: Category,
+    ):
+        p_visible = _make_product(session, seller_id_from_token, test_category.id, title="Visible")
+        await session.flush()
+        _make_sku(session, p_visible, active_quantity=4)
+        p_hidden = _make_product(
+            session,
+            seller_id_from_token,
+            test_category.id,
+            status=ProductStatus.HARD_BLOCKED,
+            title="Hidden",
+        )
+        await session.flush()
+        _make_sku(session, p_hidden, active_quantity=4)
+        await session.commit()
+
+        ids_param = f"{p_visible.id},{p_hidden.id}"
+        response = await client.get(
+            "/api/v1/products",
+            params={"ids": ids_param},
+            headers={"X-Service-Key": settings.b2b_to_b2c_key},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        titles = [item["title"] for item in data["items"]]
+        assert titles == ["Visible"]
+        assert data["total_count"] == 1
