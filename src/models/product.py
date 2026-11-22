@@ -13,7 +13,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     Enum as SQLEnum,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -56,7 +56,14 @@ class Product(Base):
         UUID(as_uuid=True),
         nullable=True,
     )
+    blocking_reason_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
     moderator_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    field_reports: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+        server_default="[]",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=datetime.utcnow,

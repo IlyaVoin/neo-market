@@ -1,5 +1,6 @@
 from src.routes.inventory import router as inventory_router
+from src.routes.moderation import router as moderation_router
 from src.routes.products import router as products_router
 from src.routes.skus import router as skus_router
 
-__all__ = ["products_router", "skus_router", "inventory_router"]
+__all__ = ["products_router", "skus_router", "inventory_router", "moderation_router"]

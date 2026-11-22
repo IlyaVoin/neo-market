@@ -37,6 +37,14 @@ class ProductCreate(BaseModel):
     characteristics: list[ProductCharacteristicCreate] = []
 
 
+class ProductUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Annotated[str, Field(min_length=1, max_length=255)] | None = None
+    description: Annotated[str, Field(min_length=1, max_length=5000)] | None = None
+    category_id: uuid.UUID | None = None
+
+
 class ProductImageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 
