@@ -1,8 +1,6 @@
-import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -28,7 +26,7 @@ class EventPublisher:
             "product_id": str(product_id),
             "seller_id": str(seller_id),
             "event": event_type,
-            "date": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "date": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
 
         event = OutboxEvent(
@@ -55,7 +53,7 @@ class EventPublisher:
             "event": event_type,
             "product_id": str(product_id),
             "sku_ids": [str(sku_id) for sku_id in sku_ids],
-            "date": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "date": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
 
         event = OutboxEvent(
@@ -64,5 +62,31 @@ class EventPublisher:
             payload=payload,
             service_key=settings.b2b_to_b2c_key,
             target_url=f"{settings.b2c_service_url}/api/v1/events/product",
+        )
+        self.session.add(event)
+
+    async def publish_sku_out_of_stock(
+        self,
+        sku_id: uuid.UUID,
+        product_id: uuid.UUID,
+        idempotency_key: uuid.UUID | None = None,
+    ) -> None:
+        if idempotency_key is None:
+            idempotency_key = uuid.uuid4()
+
+        payload = {
+            "idempotency_key": str(idempotency_key),
+            "event": "SKU_OUT_OF_STOCK",
+            "sku_id": str(sku_id),
+            "product_id": str(product_id),
+            "date": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        }
+
+        event = OutboxEvent(
+            event_type="sku.out_of_stock",
+            aggregate_id=sku_id,
+            payload=payload,
+            service_key=settings.b2b_to_b2c_key,
+            target_url=f"{settings.b2c_service_url}/api/v1/events/inventory",
         )
         self.session.add(event)

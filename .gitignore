@@ -197,3 +197,5 @@ PLAN.md
 PR_DESCRIPTION.md
 b2b-flows.md
 b2b.yaml
+*.code-workspace
+.kilo
