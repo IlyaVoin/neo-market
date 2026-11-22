@@ -12,8 +12,10 @@ from src.schemas.order import OrderCreateRequest, OrderItemResponse, OrderRespon
 from src.services.order_service import (
     B2BUnavailableError,
     BodyMismatchError,
+    CancelNotAllowedError,
     EmptyCartError,
     InvalidQuantityError,
+    OrderNotFoundError,
     OrderService,
     ReserveFailedError,
 )
@@ -151,6 +153,46 @@ async def create_order(
             detail={
                 "code": "B2B_UNAVAILABLE",
                 "message": "Сервис товаров временно недоступен, попробуйте позже",
+            },
+        ) from exc
+
+    return _to_response(order)
+
+
+@router.post(
+    "/{order_id}/cancel",
+    response_model=OrderResponse,
+    responses={
+        200: {"model": OrderResponse, "description": "CANCELLED или CANCEL_PENDING"},
+        401: {"model": Error, "description": "Unauthorized"},
+        404: {"model": Error, "description": "Order not found"},
+        409: {"model": Error, "description": "Cancel not allowed"},
+    },
+)
+async def cancel_order(
+    order_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    buyer_id: uuid.UUID = Depends(_get_buyer_id),
+) -> OrderResponse:
+    service = OrderService(session)
+    try:
+        order = await service.cancel_order(buyer_id, order_id)
+        await session.commit()
+        await session.refresh(order)
+    except OrderNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "ORDER_NOT_FOUND", "message": "Заказ не найден"},
+        ) from exc
+    except CancelNotAllowedError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CANCEL_NOT_ALLOWED",
+                "message": f"Отмена невозможна: заказ в статусе {exc.current_status}",
+                "current_status": exc.current_status,
             },
         ) from exc
 
