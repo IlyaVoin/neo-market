@@ -1,3 +1,4 @@
+from src.models.cart import CartItem
 from src.models.category import Category
 from src.models.enums import ProductStatus
 from src.models.inventory import ReserveOperation
@@ -19,4 +20,5 @@ __all__ = [
     "OutboxEvent",
     "ReserveOperation",
     "ProcessedEvent",
+    "CartItem",
 ]
