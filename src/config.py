@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         default="dev-b2b-to-mod-key",
         description="Service key for B2B to Moderation communication",
     )
+    mod_to_b2b_key: str = Field(
+        default="dev-mod-to-b2b-key",
+        description="Service key for Moderation to B2B communication",
+    )
     b2c_service_url: str = Field(
         default="http://b2c:8000",
         description="B2C service URL",

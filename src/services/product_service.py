@@ -4,7 +4,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.models import Category, Product, ProductCharacteristic, ProductImage, SKU
+from src.models import SKU, Category, Product, ProductCharacteristic, ProductImage, ProductStatus
 from src.schemas.product import (
     BlockingReason,
     FieldReport,
@@ -15,10 +15,11 @@ from src.schemas.product import (
     ProductPublicPaginatedResponse,
     ProductPublicShortResponse,
     ProductResponse,
-    SKUDetailResponse,
     SKUCharacteristicResponse,
+    SKUDetailResponse,
     SKUPublicResponse,
 )
+from src.services.event_publisher import EventPublisher
 
 
 class ProductService:
@@ -111,6 +112,71 @@ class ProductService:
             raise ValueError("Product not found")
 
         return self._to_detail_response(product, service_key=service_key)
+
+    async def update_product(
+        self,
+        product_id: uuid.UUID,
+        seller_id: uuid.UUID,
+        product_data,
+    ) -> ProductDetailResponse:
+        stmt = select(Product).where(Product.id == product_id).with_for_update()
+        result = await self.session.execute(stmt)
+        product = result.scalar_one_or_none()
+
+        if product is None or product.seller_id != seller_id:
+            raise ValueError("Product not found")
+
+        if product.status == ProductStatus.HARD_BLOCKED:
+            raise ValueError("Cannot edit hard-blocked product")
+
+        if product_data.title is not None:
+            product.title = product_data.title
+        if product_data.description is not None:
+            product.description = product_data.description
+        if product_data.category_id is not None:
+            await self._validate_category(product_data.category_id)
+            product.category_id = product_data.category_id
+
+        if product.status in (ProductStatus.MODERATED, ProductStatus.BLOCKED):
+            product.status = ProductStatus.ON_MODERATION
+            publisher = EventPublisher(self.session)
+            await publisher.publish_moderation_event(
+                event_type="EDITED",
+                product_id=product.id,
+                seller_id=product.seller_id,
+            )
+
+        await self.session.flush()
+
+        stmt = (
+            select(Product)
+            .options(
+                selectinload(Product.images),
+                selectinload(Product.characteristics),
+                selectinload(Product.skus).selectinload(SKU.characteristics),
+            )
+            .where(Product.id == product.id)
+        )
+        result = await self.session.execute(stmt)
+        product = result.scalar_one()
+        return self._to_detail_response(product)
+
+    async def delete_product(self, product_id: uuid.UUID, seller_id: uuid.UUID) -> None:
+        stmt = select(Product).where(Product.id == product_id).with_for_update()
+        result = await self.session.execute(stmt)
+        product = result.scalar_one_or_none()
+
+        if product is None or product.seller_id != seller_id:
+            raise ValueError("Product not found")
+
+        if product.status == ProductStatus.HARD_BLOCKED:
+            raise ValueError("Cannot delete hard-blocked product")
+
+        if product.deleted:
+            raise ValueError("Product already deleted")
+
+        product.deleted = True
+        await self.session.flush()
 
     async def list_products(
         self,
@@ -232,16 +298,25 @@ class ProductService:
 
         blocked = product.status in (ProductStatus.BLOCKED, ProductStatus.HARD_BLOCKED)
 
-        if product.blocking_reason_id is not None:
+        if blocked:
             blocking_reason = BlockingReason(
                 id=product.blocking_reason_id,
-                title=product.moderator_comment or product.status.value,
+                title=product.blocking_reason_title
+                or product.moderator_comment
+                or product.status.value,
                 comment=product.moderator_comment,
             )
         else:
             blocking_reason = None
 
-        field_reports: list[FieldReport] = []
+        field_reports = [
+            FieldReport(
+                field_name=report.get("field_name", ""),
+                sku_id=uuid.UUID(report["sku_id"]) if report.get("sku_id") else None,
+                comment=report.get("comment"),
+            )
+            for report in (product.field_reports or [])
+        ]
 
         skus: list[SKUDetailResponse] = []
         for sku in product.skus:

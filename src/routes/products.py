@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_seller_id, get_optional_seller_id
@@ -12,6 +12,7 @@ from src.schemas.product import (
     ProductDetailResponse,
     ProductPublicPaginatedResponse,
     ProductResponse,
+    ProductUpdate,
 )
 from src.services.product_service import ProductService
 
@@ -154,5 +155,104 @@ async def get_product(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "NOT_FOUND", "message": "Product not found"},
+            )
+        raise
+
+
+@router.patch(
+    "/{product_id}",
+    response_model=ProductDetailResponse,
+    responses={
+        200: {"model": ProductDetailResponse, "description": "Updated"},
+        400: {"model": Error, "description": "Invalid request"},
+        401: {"model": Error, "description": "Unauthorized"},
+        403: {"model": Error, "description": "HARD_BLOCKED product is not editable"},
+        404: {"model": Error, "description": "Product not found"},
+    },
+)
+async def update_product(
+    product_id: uuid.UUID,
+    product_data: ProductUpdate,
+    session: AsyncSession = Depends(get_session),
+    seller_id: str = Depends(get_current_seller_id),
+) -> ProductDetailResponse:
+    try:
+        seller_uuid = uuid.UUID(seller_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Invalid seller ID in token"},
+        ) from e
+
+    service = ProductService(session)
+    try:
+        product = await service.update_product(product_id, seller_uuid, product_data)
+        await session.commit()
+        return product
+    except ValueError as e:
+        await session.rollback()
+        if str(e) == "Product not found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "NOT_FOUND", "message": "Product not found"},
+            )
+        if str(e) == "Cannot edit hard-blocked product":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": "Cannot edit hard-blocked product"},
+            )
+        if str(e) == "Category not found":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_REQUEST", "message": "Category not found"},
+            )
+        raise
+
+
+@router.delete(
+    "/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        204: {"description": "Мягкое удаление (deleted=true)"},
+        400: {"model": Error, "description": "Product already deleted"},
+        401: {"model": Error, "description": "Unauthorized"},
+        403: {"model": Error, "description": "HARD_BLOCKED product cannot be deleted"},
+        404: {"model": Error, "description": "Product not found"},
+    },
+)
+async def delete_product(
+    product_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    seller_id: str = Depends(get_current_seller_id),
+) -> Response:
+    try:
+        seller_uuid = uuid.UUID(seller_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Invalid seller ID in token"},
+        ) from e
+
+    service = ProductService(session)
+    try:
+        await service.delete_product(product_id, seller_uuid)
+        await session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ValueError as e:
+        await session.rollback()
+        if str(e) == "Product not found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "NOT_FOUND", "message": "Product not found"},
+            )
+        if str(e) == "Cannot delete hard-blocked product":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": "Cannot delete hard-blocked product"},
+            )
+        if str(e) == "Product already deleted":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"code": "INVALID_REQUEST", "message": "Product already deleted"},
             )
         raise

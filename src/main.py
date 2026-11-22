@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from src.database import close_db, init_db
-from src.routes import inventory_router, products_router, skus_router
+from src.routes import inventory_router, moderation_router, products_router, skus_router
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app = FastAPI(
 app.include_router(products_router)
 app.include_router(skus_router)
 app.include_router(inventory_router)
+app.include_router(moderation_router)
 
 
 def _map_validation_error(errors: list[dict]) -> str:
