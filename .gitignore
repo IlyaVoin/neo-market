@@ -199,3 +199,5 @@ b2b-flows.md
 b2b.yaml
 *.code-workspace
 .kilo
+b2c-cart-flows.md
+b2c.yaml
