@@ -48,6 +48,10 @@ class Settings(BaseSettings):
         default=False,
         description="Simulate B2B being unavailable for the catalog (used in tests/ops)",
     )
+    b2b_unavailable: bool = Field(
+        default=False,
+        description="Simulate B2B being unavailable for checkout (used in tests/ops)",
+    )
 
 
 settings = Settings()

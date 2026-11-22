@@ -14,6 +14,7 @@ class SkuSnapshot:
     product_status: str
     product_deleted: bool
     name: str
+    product_title: str
     price: int
     image: str
     active_quantity: int
@@ -51,6 +52,7 @@ class B2BClient:
                 product_status=product.status.value,
                 product_deleted=product.deleted,
                 name=sku.name,
+                product_title=product.title,
                 price=sku.price,
                 image=sku.image,
                 active_quantity=sku.active_quantity,
