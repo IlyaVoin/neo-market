@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         default="http://b2c:8000",
         description="B2C service URL",
     )
+    b2b_service_url: str = Field(
+        default="http://b2b:8000",
+        description="B2B service URL (used by Moderation to deliver events)",
+    )
     b2b_to_b2c_key: str = Field(
         default="dev-b2b-to-b2c-key",
         description="Service key for B2B to B2C communication",

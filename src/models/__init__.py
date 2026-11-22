@@ -1,11 +1,12 @@
 from src.models.cart import CartItem
 from src.models.category import Category
-from src.models.enums import OrderStatus, ProductStatus
+from src.models.enums import ModerationStatus, OrderStatus, ProductStatus
 from src.models.inventory import ReserveOperation
 from src.models.moderation import ProcessedEvent
 from src.models.order import Order, OrderItem
 from src.models.outbox import OutboxEvent
 from src.models.product import Product, ProductCharacteristic, ProductImage
+from src.models.product_moderation import ProductModeration
 from src.models.seller import Seller
 from src.models.sku import SKU, SKUCharacteristic
 
@@ -25,4 +26,6 @@ __all__ = [
     "Order",
     "OrderItem",
     "OrderStatus",
+    "ProductModeration",
+    "ModerationStatus",
 ]

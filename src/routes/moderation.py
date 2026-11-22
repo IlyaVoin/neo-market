@@ -1,13 +1,28 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import get_session
 from src.schemas.errors import Error
-from src.schemas.moderation import ModerationEventOpenAPIRequest, ModerationEventRequest
+from src.schemas.moderation import (
+    ApproveRequest,
+    ModerationEventOpenAPIRequest,
+    ModerationEventRequest,
+)
+from src.services.moderation_approval_service import (
+    ApproveConflictError,
+    ModerationApprovalService,
+    ModerationCardNotFoundError,
+    NotAssignedError,
+)
 from src.services.moderation_service import ApplyResult, ModerationDecision, ModerationService
 
 router = APIRouter(prefix="/api/v1", tags=["moderation"])
+moderator_security = HTTPBearer(auto_error=False)
 
 
 async def _verify_service_key(x_service_key: str | None) -> None:
@@ -98,3 +113,72 @@ async def receive_moderation_event_openapi(
     await _verify_service_key(x_service_key)
     await _apply(session, _openapi_decision(payload))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _get_moderator_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(moderator_security),
+) -> uuid.UUID:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Authentication required"},
+        )
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        sub = payload.get("sub")
+        moderator_id = uuid.UUID(sub) if sub is not None else None
+    except (JWTError, ValueError):
+        moderator_id = None
+    if moderator_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Authentication required"},
+        )
+    return moderator_id
+
+
+@router.post(
+    "/products/{product_id}/approve",
+    responses={
+        200: {"description": "Товар одобрен (MODERATED)"},
+        401: {"model": Error, "description": "Unauthorized"},
+        403: {"model": Error, "description": "Not assigned to you"},
+        404: {"model": Error, "description": "Product not found in moderation queue"},
+        409: {"model": Error, "description": "Invalid status / no SKUs"},
+    },
+)
+async def approve_product(
+    product_id: uuid.UUID,
+    payload: ApproveRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    moderator_id: uuid.UUID = Depends(_get_moderator_id),
+) -> dict:
+    service = ModerationApprovalService(session)
+    comment = payload.moderator_comment if payload is not None else None
+    try:
+        card = await service.approve_product(product_id, moderator_id, comment)
+        await session.commit()
+    except ModerationCardNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "NOT_FOUND", "message": str(exc)},
+        ) from exc
+    except NotAssignedError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": str(exc)},
+        ) from exc
+    except ApproveConflictError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CONFLICT", "message": str(exc)},
+        ) from exc
+
+    return {"product_id": str(card.product_id), "status": card.status.value}
