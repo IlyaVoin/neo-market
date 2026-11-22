@@ -44,6 +44,10 @@ class Settings(BaseSettings):
         default="dev-b2b-to-b2c-key",
         description="Service key for B2B to B2C communication",
     )
+    catalog_b2b_unavailable: bool = Field(
+        default=False,
+        description="Simulate B2B being unavailable for the catalog (used in tests/ops)",
+    )
 
 
 settings = Settings()
