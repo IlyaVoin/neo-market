@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import uuid
 
 from sqlalchemy import select
@@ -14,6 +15,10 @@ from src.models.order import OrderItem
 from src.schemas.order import FailedItem, OrderCreateRequest
 from src.services.b2b_client import B2BClient
 from src.services.inventory_service import InventoryService
+
+logger = logging.getLogger(__name__)
+
+CANCELLABLE_STATUSES = frozenset({OrderStatus.CREATED, OrderStatus.PAID})
 
 
 class EmptyCartError(Exception):
@@ -38,6 +43,18 @@ class BodyMismatchError(Exception):
 
 class B2BUnavailableError(Exception):
     """B2B недоступен → 503 B2B_UNAVAILABLE."""
+
+
+class OrderNotFoundError(Exception):
+    """Заказ не найден или чужой → 404 ORDER_NOT_FOUND."""
+
+
+class CancelNotAllowedError(Exception):
+    """Статус не допускает отмену → 409 CANCEL_NOT_ALLOWED."""
+
+    def __init__(self, current_status: str):
+        self.current_status = current_status
+        super().__init__(f"cancel not allowed in status {current_status}")
 
 
 class OrderService:
@@ -201,3 +218,49 @@ class OrderService:
             raise
 
         return order, True
+
+    async def _load_owned(self, order_id: uuid.UUID, buyer_id: uuid.UUID) -> Order:
+        stmt = (
+            select(Order)
+            .where(Order.id == order_id, Order.buyer_id == buyer_id)
+            .options(selectinload(Order.items))
+        )
+        result = await self.session.execute(stmt)
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise OrderNotFoundError("order not found")
+        return order
+
+    async def cancel_order(self, buyer_id: uuid.UUID, order_id: uuid.UUID) -> Order:
+        order = await self._load_owned(order_id, buyer_id)
+
+        if order.status not in CANCELLABLE_STATUSES:
+            raise CancelNotAllowedError(order.status.value)
+
+        # OrderItem имеет sku_id/quantity — формат, который ожидает unreserve.
+        items = list(order.items)
+
+        failure: Exception | None = None
+        if settings.b2b_unavailable:
+            failure = B2BUnavailableError("B2B is unavailable")
+        else:
+            try:
+                await self.inventory.unreserve(order_id, items)
+            except ValueError as exc:
+                failure = exc
+
+        if failure is None:
+            order.status = OrderStatus.CANCELLED
+            await self.session.flush()
+            return order
+
+        # unreserve упал: откатываем возможные частичные правки SKU и
+        # фиксируем намерение отмены (CANCEL_PENDING) для async retry.
+        await self.session.rollback()
+        logger.warning(
+            "unreserve failed for order %s, set CANCEL_PENDING: %s", order_id, failure
+        )
+        order = await self._load_owned(order_id, buyer_id)
+        order.status = OrderStatus.CANCEL_PENDING
+        await self.session.flush()
+        return order
