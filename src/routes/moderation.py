@@ -10,11 +10,16 @@ from src.database import get_session
 from src.schemas.errors import Error
 from src.schemas.moderation import (
     ApproveRequest,
+    DeclineRequest,
+    IncomingProductEvent,
     ModerationEventOpenAPIRequest,
     ModerationEventRequest,
 )
 from src.services.moderation_approval_service import (
     ApproveConflictError,
+    BlockingReasonNotFoundError,
+    CardNotFoundError,
+    DuplicateProductEventError,
     ModerationApprovalService,
     ModerationCardNotFoundError,
     NotAssignedError,
@@ -182,3 +187,87 @@ async def approve_product(
         ) from exc
 
     return {"product_id": str(card.product_id), "status": card.status.value}
+
+
+@router.post(
+    "/products/{product_id}/decline",
+    responses={
+        200: {"description": "BLOCKED или HARD_BLOCKED"},
+        400: {"model": Error, "description": "Blocking reason not found"},
+        401: {"model": Error, "description": "Unauthorized"},
+        403: {"model": Error, "description": "Not assigned to you"},
+        404: {"model": Error, "description": "Product not found in moderation queue"},
+        409: {"model": Error, "description": "Invalid status / permanently blocked"},
+    },
+)
+async def decline_product(
+    product_id: uuid.UUID,
+    payload: DeclineRequest,
+    session: AsyncSession = Depends(get_session),
+    moderator_id: uuid.UUID = Depends(_get_moderator_id),
+) -> dict:
+    service = ModerationApprovalService(session)
+    try:
+        card = await service.decline_product(product_id, moderator_id, payload)
+        await session.commit()
+    except ModerationCardNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "NOT_FOUND", "message": str(exc)},
+        ) from exc
+    except NotAssignedError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": str(exc)},
+        ) from exc
+    except BlockingReasonNotFoundError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_REQUEST", "message": str(exc)},
+        ) from exc
+    except ApproveConflictError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CONFLICT", "message": str(exc)},
+        ) from exc
+
+    return {"product_id": str(card.product_id), "status": card.status.value}
+
+
+async def _verify_b2b_key(x_service_key: str | None) -> None:
+    if x_service_key != settings.b2b_to_mod_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "UNAUTHORIZED", "message": "Authorization header is missing"},
+        )
+
+
+@router.post(
+    "/events/product",
+    responses={
+        200: {"description": "Событие принято"},
+        400: {"model": Error, "description": "Invalid event"},
+        401: {"model": Error, "description": "Unauthorized"},
+    },
+)
+async def receive_product_event(
+    payload: IncomingProductEvent,
+    session: AsyncSession = Depends(get_session),
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+) -> dict:
+    await _verify_b2b_key(x_service_key)
+    service = ModerationApprovalService(session)
+    try:
+        result = await service.handle_b2b_product_event(payload)
+        await session.commit()
+    except (DuplicateProductEventError, CardNotFoundError) as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_REQUEST", "message": str(exc)},
+        ) from exc
+    return {"result": result}

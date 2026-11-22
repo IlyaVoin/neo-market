@@ -6,6 +6,7 @@ from src.models.moderation import ProcessedEvent
 from src.models.order import Order, OrderItem
 from src.models.outbox import OutboxEvent
 from src.models.product import Product, ProductCharacteristic, ProductImage
+from src.models.product_blocking_reason import ProductBlockingReason
 from src.models.product_moderation import ProductModeration
 from src.models.seller import Seller
 from src.models.sku import SKU, SKUCharacteristic
@@ -28,4 +29,5 @@ __all__ = [
     "OrderStatus",
     "ProductModeration",
     "ModerationStatus",
+    "ProductBlockingReason",
 ]

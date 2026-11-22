@@ -43,11 +43,7 @@ class EventPublisher:
         product_id: uuid.UUID,
         idempotency_key: uuid.UUID,
     ) -> None:
-        """Событие MODERATED от Moderation в B2B (approve).
-
-        Идемпотентность: стабильный idempotency_key; B2B-приёмник дедуплицирует
-        через ProcessedEvent, поэтому повторная доставка не-duблирует публикацию.
-        """
+        """Событие MODERATED от Moderation в B2B (approve)."""
         payload = {
             "idempotency_key": str(idempotency_key),
             "product_id": str(product_id),
@@ -57,6 +53,38 @@ class EventPublisher:
 
         event = OutboxEvent(
             event_type="moderation.moderated",
+            aggregate_id=product_id,
+            payload=payload,
+            service_key=settings.mod_to_b2b_key,
+            target_url=f"{settings.b2b_service_url}/api/v1/events/moderation",
+        )
+        self.session.add(event)
+
+    async def publish_blocked_to_b2b(
+        self,
+        product_id: uuid.UUID,
+        idempotency_key: uuid.UUID,
+        hard_block: bool,
+        blocking_reason: dict,
+        field_reports: list[dict] | None = None,
+    ) -> None:
+        """Событие BLOCKED от Moderation в B2B (MOD-4/MOD-5).
+
+        hard_block=true → B2B переводит товар в HARD_BLOCKED (терминал) + каскад.
+        Идемпотентность: стабильный idempotency_key; приём дедуплицирует.
+        """
+        payload = {
+            "idempotency_key": str(idempotency_key),
+            "product_id": str(product_id),
+            "status": "BLOCKED",
+            "hard_block": hard_block,
+            "blocking_reason": blocking_reason,
+            "field_reports": field_reports or [],
+            "date": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        }
+
+        event = OutboxEvent(
+            event_type="moderation.blocked",
             aggregate_id=product_id,
             payload=payload,
             service_key=settings.mod_to_b2b_key,
