@@ -1,5 +1,6 @@
 from src.models.category import Category
 from src.models.enums import ProductStatus
+from src.models.inventory import ReserveOperation
 from src.models.product import Product, ProductCharacteristic, ProductImage
 from src.models.seller import Seller
 from src.models.sku import SKU, SKUCharacteristic
@@ -15,4 +16,5 @@ __all__ = [
     "SKU",
     "SKUCharacteristic",
     "OutboxEvent",
+    "ReserveOperation",
 ]
