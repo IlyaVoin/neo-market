@@ -17,3 +17,11 @@ class OrderStatus(str, enum.Enum):
     DELIVERED = "DELIVERED"
     CANCELLED = "CANCELLED"
     CANCEL_PENDING = "CANCEL_PENDING"
+
+
+class ModerationStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    IN_REVIEW = "IN_REVIEW"
+    MODERATED = "MODERATED"
+    BLOCKED = "BLOCKED"
+    HARD_BLOCKED = "HARD_BLOCKED"

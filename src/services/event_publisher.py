@@ -38,6 +38,32 @@ class EventPublisher:
         )
         self.session.add(event)
 
+    async def publish_moderated_to_b2b(
+        self,
+        product_id: uuid.UUID,
+        idempotency_key: uuid.UUID,
+    ) -> None:
+        """Событие MODERATED от Moderation в B2B (approve).
+
+        Идемпотентность: стабильный idempotency_key; B2B-приёмник дедуплицирует
+        через ProcessedEvent, поэтому повторная доставка не-duблирует публикацию.
+        """
+        payload = {
+            "idempotency_key": str(idempotency_key),
+            "product_id": str(product_id),
+            "status": "MODERATED",
+            "date": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        }
+
+        event = OutboxEvent(
+            event_type="moderation.moderated",
+            aggregate_id=product_id,
+            payload=payload,
+            service_key=settings.mod_to_b2b_key,
+            target_url=f"{settings.b2b_service_url}/api/v1/events/moderation",
+        )
+        self.session.add(event)
+
     async def publish_b2c_event(
         self,
         event_type: str,

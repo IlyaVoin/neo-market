@@ -52,3 +52,12 @@ class ModerationEventOpenAPIRequest(BaseModel):
     blocking_reason_id: uuid.UUID | None = None
     field_reports: list[FieldReportIn] | None = None
     occurred_at: datetime
+
+
+# --- POST /api/v1/products/{product_id}/approve (canon moderation-flows.md#approve-product) ---
+
+
+class ApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    moderator_comment: str | None = None
