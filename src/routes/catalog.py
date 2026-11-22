@@ -13,9 +13,11 @@ from src.schemas.catalog import (
     FacetsResponse,
 )
 from src.schemas.errors import Error
+from src.schemas.product_card import ProductCardResponse
 from src.services.cart_service import CartIdentity
 from src.services.catalog_b2b_client import B2BUnavailableError, CatalogParams
 from src.services.catalog_service import CatalogService, InvalidSortError
+from src.services.product_service import ProductService
 
 router = APIRouter(prefix="/api/v1/catalog", tags=["catalog"])
 optional_security = HTTPBearer(auto_error=False)
@@ -110,6 +112,31 @@ async def catalog_products(
         ) from exc
     except B2BUnavailableError as exc:
         raise _unavailable() from exc
+
+
+@router.get(
+    "/products/{product_id}",
+    response_model=ProductCardResponse,
+    responses={
+        200: {"model": ProductCardResponse, "description": "Карточка товара B2C"},
+        401: {"model": Error, "description": "Unauthorized"},
+        404: {"model": Error, "description": "Not found"},
+    },
+)
+async def product_card(
+    product_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+) -> ProductCardResponse:
+    await _verify_service_key(x_service_key)
+    service = ProductService(session)
+    try:
+        return await service.get_product_card(product_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "NOT_FOUND", "message": str(exc)},
+        ) from exc
 
 
 @router.get(

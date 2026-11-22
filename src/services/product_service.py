@@ -19,6 +19,7 @@ from src.schemas.product import (
     SKUDetailResponse,
     SKUPublicResponse,
 )
+from src.schemas.product_card import ProductCardResponse, ProductCardSku
 from src.services.event_publisher import EventPublisher
 
 
@@ -112,6 +113,55 @@ class ProductService:
             raise ValueError("Product not found")
 
         return self._to_detail_response(product, service_key=service_key)
+
+    async def get_product_card(
+        self,
+        product_id: uuid.UUID,
+    ) -> ProductCardResponse:
+        """B2C-карточка товара. Только MODERATED и не удалённый; без cost_price/reserved_quantity."""
+        stmt = (
+            select(Product)
+            .options(
+                selectinload(Product.images),
+                selectinload(Product.characteristics),
+                selectinload(Product.skus).selectinload(SKU.characteristics),
+            )
+            .where(Product.id == product_id)
+        )
+        result = await self.session.execute(stmt)
+        product = result.scalar_one_or_none()
+
+        if product is None or product.status != ProductStatus.MODERATED or product.deleted:
+            raise ValueError("Product not found")
+
+        return ProductCardResponse(
+            id=product.id,
+            slug=product.slug,
+            title=product.title,
+            description=product.description,
+            status=product.status.value,
+            images=[ProductImageResponse.model_validate(image) for image in product.images],
+            characteristics=[
+                ProductCharacteristicResponse.model_validate(char)
+                for char in product.characteristics
+            ],
+            skus=[
+                ProductCardSku(
+                    id=sku.id,
+                    name=sku.name,
+                    price=sku.price,
+                    discount=sku.discount,
+                    image=sku.image,
+                    active_quantity=sku.active_quantity,
+                    in_stock=sku.active_quantity > 0,
+                    characteristics=[
+                        SKUCharacteristicResponse.model_validate(char)
+                        for char in sku.characteristics
+                    ],
+                )
+                for sku in product.skus
+            ],
+        )
 
     async def update_product(
         self,
