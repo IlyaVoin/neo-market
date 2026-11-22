@@ -11,6 +11,7 @@ from src.routes import (
     catalog_router,
     inventory_router,
     moderation_router,
+    orders_router,
     products_router,
     skus_router,
 )
@@ -36,6 +37,7 @@ app.include_router(inventory_router)
 app.include_router(moderation_router)
 app.include_router(cart_router)
 app.include_router(catalog_router)
+app.include_router(orders_router)
 
 
 def _map_validation_error(errors: list[dict]) -> str:

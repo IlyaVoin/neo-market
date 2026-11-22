@@ -7,3 +7,13 @@ class ProductStatus(str, enum.Enum):
     MODERATED = "MODERATED"
     BLOCKED = "BLOCKED"
     HARD_BLOCKED = "HARD_BLOCKED"
+
+
+class OrderStatus(str, enum.Enum):
+    CREATED = "CREATED"
+    PAID = "PAID"
+    ASSEMBLING = "ASSEMBLING"
+    DELIVERING = "DELIVERING"
+    DELIVERED = "DELIVERED"
+    CANCELLED = "CANCELLED"
+    CANCEL_PENDING = "CANCEL_PENDING"
