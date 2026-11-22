@@ -1,68 +1,58 @@
-# NeoMarket B2B — API товара и SKU
+# NeoMarket B2B — API кабинета продавца
 
-Реализация endpoints для кабинета продавца NeoMarket B2B:
-- `POST /api/v1/products` (B2B-1: Создание товара)
-- `POST /api/v1/skus` (B2B-2: Создание SKU)
-- `GET /api/v1/products/{id}` (B2B-5: Просмотр карточки товара)
+Реализация backend для B2B-кабинета продавца NeoMarket: товары и SKU, складской резерв,
+корзина, каталог, заказы, модерация товаров и интеграция между сервисами (B2B ↔ Moderation ↔ B2C).
+
+- **Приложение:** FastAPI, `title="NeoMarket B2B API"`, `version="0.1.0"`.
+- **Аутентификация:** JWT для продавцов и модераторов (`sub` = seller_id/moderator_id); сервисные вызовы — по `X-Service-Key`.
+- **События:** outbox-паттерн; интеграционные эндпоинты защищены service-key и идемпотентны.
 
 ## Стек
 
 - **FastAPI** (ASGI, Pydantic v2 схемы)
-- **SQLAlchemy 2.0** + **asyncpg** (async сессии, UUID как PostgreSQL `uuid`)
-- **Alembic** — миграции БД
-- **Pytest** + **pytest-asyncio** + **httpx** (AsyncClient, ASGITransport)
+- **SQLAlchemy 2.0** + **asyncpg** (async-сессии, UUID как PostgreSQL `uuid`)
+- **Alembic** — миграции БД (001…009)
+- **Pytest** + **pytest-asyncio** + **httpx** (AsyncClient, ASGITransport); SQLite in-memory для тестов
 - **Docker** + **docker-compose** (приложение + PostgreSQL 15)
-- **JWT**: `python-jose` для валидации токенов (`sub` = seller_id)
+- **JWT**: `python-jose` (валидация токенов, `sub` = идентификатор субъекта)
 
 ## Структура проекта
 
 ```
 neo-market/
 ├── src/
-│   ├── main.py                 # FastAPI приложение, регистрация роутеров
-│   ├── config.py               # Настройки (env, DATABASE_URL, JWT_SECRET)
-│   ├── database.py             # Engine, sessionmaker, Base
-│   ├── auth/
-│   │   └── dependencies.py     # get_current_seller_id, get_optional_seller_id
+│   ├── main.py                      # FastAPI app, регистрация роутеров, error-handlers
+│   ├── config.py                    # Settings (pydantic-settings, env/.env)
+│   ├── database.py                  # Engine, sessionmaker, Base (expire_on_commit=False)
+│   ├── auth/dependencies.py         # get_current_seller_id, get_optional_seller_id, moderator
 │   ├── models/
-│   │   ├── __init__.py
-│   │   ├── seller.py           # Seller (заготовка для auth)
-│   │   ├── category.py         # Category
-│   │   ├── product.py          # Product, ProductImage, ProductCharacteristic
-│   │   ├── sku.py              # SKU, SKUCharacteristic
-│   │   ├── outbox.py           # OutboxEvent
-│   │   └── enums.py            # ProductStatus
+│   │   ├── enums.py                 # ProductStatus, OrderStatus, ModerationStatus
+│   │   ├── seller.py / category.py  # Seller, Category
+│   │   ├── product.py               # Product, ProductImage, ProductCharacteristic
+│   │   ├── sku.py                   # SKU, SKUCharacteristic
+│   │   ├── inventory.py             # ReserveOperation
+│   │   ├── moderation.py            # ProcessedEvent (идемпотентность приёма событий)
+│   │   ├── product_moderation.py    # ProductModeration (карточка модерации, аудиты)
+│   │   ├── product_blocking_reason.py # ProductBlockingReason (справочник причин, hard_block)
+│   │   ├── cart.py                  # CartItem
+│   │   ├── order.py                 # Order, OrderItem
+│   │   └── outbox.py                # OutboxEvent
 │   ├── schemas/
-│   │   ├── __init__.py
-│   │   ├── product.py          # ProductCreate, ProductResponse
-│   │   ├── sku.py              # SKUCreate, SKUResponse
-│   │   └── errors.py           # Error (code, message, details?)
+│   │   ├── product.py / sku.py / errors.py
+│   │   ├── moderation.py            # DeclineRequest, ApproveRequest, события
+│   │   ├── inventory.py / cart.py / catalog.py / product_card.py / order.py
 │   ├── routes/
-│   │   ├── __init__.py
-│   │   ├── products.py         # POST /api/v1/products, GET /api/v1/products/{id}
-│   │   └── skus.py             # POST /api/v1/skus
+│   │   ├── products.py / skus.py / inventory.py
+│   │   ├── moderation.py / cart.py / catalog.py / orders.py
 │   └── services/
-│       ├── __init__.py
-│       ├── product_service.py  # Создание товара + валидация категории
-│       ├── sku_service.py      # Создание SKU + переход статуса + события
-│       └── event_publisher.py  # Outbox-паттерн для событий
-├── migrations/
-│   ├── env.py
-│   └── versions/
-│       ├── 001_create_categories.py
-│       ├── 002_create_products.py
-│       └── 003_create_skus_and_outbox.py
-├── tests/
-│   ├── conftest.py             # Фикстуры: in-memory БД, сессия, JWT
-│   ├── test_products.py        # 4 канонических теста (DoD)
-│   ├── test_skus.py            # 10 канонических тестов SKU (DoD)
-│   └── test_validation.py      # 5 дополнительных тестов валидации
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-├── requirements.txt
-├── alembic.ini
-└── README.md
+│       ├── product_service.py / sku_service.py
+│       ├── inventory_service.py / cart_service.py / catalog_service.py
+│       ├── order_service.py / moderation_service.py / moderation_approval_service.py
+│       ├── event_publisher.py       # outbox → B2B
+│       ├── b2b_client.py / catalog_b2b_client.py  # исходящие интеграционные вызовы
+├── migrations/versions/001…009       # Alembic-миграции (вкл. сид blocking_reasons)
+├── tests/                            # pytest (см. раздел «Тесты»)
+├── Dockerfile / docker-compose.yml / pyproject.toml / requirements.txt
 ```
 
 ## Быстрый старт
@@ -74,294 +64,155 @@ docker-compose up --build
 ```
 
 Приложение:
-1. Ждёт готовности PostgreSQL (healthcheck)
-2. Запускает миграции Alembic (`alembic upgrade head`)
-3. Стартует на `http://0.0.0.0:8000`
+1. ждёт готовности PostgreSQL (healthcheck);
+2. выполняет `alembic upgrade head`;
+3. стартует на `http://0.0.0.0:8000`.
 
 ### Локальная разработка
 
 ```bash
-# Установка зависимостей
 pip install -r requirements.txt
 
-# Переменные окружения
 export DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/neomarket"
 export JWT_SECRET="your-secret-key"
 
-# Миграции
 alembic upgrade head
-
-# Запуск сервера
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## Запуск тестов
+## Тесты
 
 ```bash
-# Все тесты
-pytest tests/ -v
+# Все тесты (95 passed)
+pytest -q
 
-# Kanon-тесты: товары (B2B-1 + B2B-5)
-pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category or get_moderated or get_blocked or get_others or get_nonexistent" -v
+# Отдельные потоки
+pytest tests/test_products.py tests/test_skus.py -q          # B2B-1, B2B-2
+pytest tests/test_product_card.py -q                          # B2C-3 карточка товара
+pytest tests/test_catalog.py -q                               # каталог
+pytest tests/test_cart.py -q                                  # корзина
+pytest tests/test_orders.py tests/test_order_cancel.py -q     # заказы + отмена
+pytest tests/test_inventory.py -q                             # резерв/унрезерв
+pytest tests/test_moderation_approve.py -q                    # MOD-3 одобрение
+pytest tests/test_moderation_hard_block.py -q                 # MOD-5 жёсткая блокировка
+pytest tests/test_moderation.py -q                            # MOD-1 приём событий
 
-# Kanon-тесты: SKU (B2B-2)
-pytest tests/test_skus.py -k "first_sku_transitions_product_to_on_moderation or first_sku_emits_created_event_to_moderation or second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited or add_sku_to_hard_blocked_returns_403 or missing_image_returns_400" -v
-
-# С покрытием
+# Покрытие
 pytest tests/ --cov=src --cov-report=term-missing
+
+# Линтер (ruff)
+ruff check src tests
 ```
 
-## API Endpoint
+## Аутентификация и режимы доступа
 
-### Создание товара
+- **Продавец** — `Authorization: Bearer <JWT>`; `sub` = `seller_id`. Владение проверяется по `product.seller_id == sub`.
+- **Модератор** — тот же JWT, но `sub` = `moderator_id` (эндпоинты `approve`/`decline` moderation-роутера).
+- **Сервисный режим** — заголовок `X-Service-Key`:
+  - `b2b_to_mod_key` — B2B → Moderation (`POST /api/v1/events/product`, приём модерации).
+  - `mod_to_b2b_key` / `b2b_to_b2c_key` — Moderation→B2B и B2B→B2C события.
+  - `b2b_to_mod_key` / `b2b_to_b2c_key` — доступ к service-режиму `GET /api/v1/products/{id}`.
+- `seller_id`/`buyer_id`/`moderator_id` **всегда** берутся из JWT (`claims["sub"]`), никогда из тела запроса (защита от IDOR).
 
-**POST** `/api/v1/products`
+## API Endpoints
 
-**Headers:**
-- `Authorization: Bearer <JWT_TOKEN>`
-- `Content-Type: application/json`
+Все пути префиксованы (`/api/v1`). Коды ошибок выдаются единообразно: `{"code": "...", "message": "..."}`.
 
-**Тело запроса:**
-```json
-{
-  "title": "iPhone 15 Pro Max",
-  "description": "Последний смартфон Apple с чипом A17 Pro",
-  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "images": [
-    {"url": "/s3/products/iphone15promax_1.jpg", "ordering": 0}
-  ],
-  "characteristics": [
-    {"name": "Brand", "value": "Apple"},
-    {"name": "Color", "value": "Natural Titanium"}
-  ]
-}
-```
+### Товары — `/api/v1/products`
 
-**Обязательные поля:** `title` (1-255), `description` (1-5000), `category_id` (UUID), `images` (мин. 1 элемент с `url` и `ordering`).
+| Метод | Путь | Назначение | Статус |
+|-------|------|------------|--------|
+| POST | `""` | Создать товар (B2B-1) | 201 |
+| GET | `""` | Список товаров (B2C, service-key `b2b_to_b2c_key`), `ids`/`limit`/`offset` | 200 |
+| GET | `/{product_id}` | Карточка товара (seller/service-режимы, B2B-5) | 200 |
+| PATCH | `/{product_id}` | Обновить товар | 200 |
+| DELETE | `/{product_id}` | Мягкое удаление (`deleted=true`) | 204 |
 
-**Успешный ответ (201):**
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "seller_id": "seller-uuid-from-jwt-sub",
-  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "title": "iPhone 15 Pro Max",
-  "slug": "iphone-15-pro-max",
-  "description": "Последний смартфон Apple с чипом A17 Pro",
-  "status": "CREATED",
-  "deleted": false,
-  "blocking_reason_id": null,
-  "moderator_comment": null,
-  "images": [
-    {"id": "img-uuid", "url": "/s3/products/iphone15promax_1.jpg", "ordering": 0}
-  ],
-  "characteristics": [
-    {"id": "char-uuid", "name": "Brand", "value": "Apple"},
-    {"id": "char-uuid", "name": "Color", "value": "Natural Titanium"}
-  ],
-  "skus": [],
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:00Z"
-}
-```
+**POST — тело:** `title` (1–255), `description` (1–5000), `category_id` (UUID), `images` (≥1 `{url, ordering}`), `characteristics? [{name,value}]`.
+**PATCH — тело:** частичное обновление (`title`, `description`, `category_id`, `images`, `characteristics`).
+**Ошибки:** 400 (валидация/категория), 401 (нет/невалидный JWT), 403 (HARD_BLOCKED: «Cannot edit/delete hard-blocked product»), 404 (не найдено/чужой товар).
 
-**Ошибки:**
+> `seller_id` всегда из JWT. `GET /{id}`: seller-режим отдаёт `cost_price`/`reserved_quantity`, service-режим возвращает их `null` и не проверяет ownership. Чужой товар в seller-режиме → **404** (защита от перебора ID). `blocked=true` только для `BLOCKED`/`HARD_BLOCKED`.
 
-| Ситуация | Код | Тело |
-|----------|-----|------|
-| Пустой title | 400 | `{"code":"INVALID_REQUEST","message":"title is required"}` |
-| Title > 255 символов | 400 | `{"code":"INVALID_REQUEST","message":"title must be 1-255 characters"}` |
-| Нет images / пустой массив | 400 | `{"code":"INVALID_REQUEST","message":"At least one image is required"}` |
-| Невалидный UUID category_id | 400 | `{"code":"INVALID_REQUEST","message":"category_id must be a valid UUID"}` |
-| Категория не найдена | 400 | `{"code":"INVALID_REQUEST","message":"Category not found"}` |
-| Невалидный/отсутствующий JWT | 401 | `{"code":"UNAUTHORIZED","message":"..."}` |
+### SKU — `/api/v1/skus`
 
-> **Важно:** `seller_id` **всегда** берётся из `claims["sub"]` в JWT, никогда из тела запроса (защита от IDOR).
+| Метод | Путь | Назначение | Статус |
+|-------|------|------------|--------|
+| POST | `""` | Создать SKU (B2B-2) | 201 |
 
-## Пример cURL
+**Тело:** `product_id` (UUID), `name` (1–255), `price` (>0, копейки), `cost_price` (>0), `image` (URL), `discount?`, `characteristics?`.
+**Ошибки:** 400 (валидация), 401, 403 (HARD_BLOCKED: «Cannot add SKU to hard-blocked product»), 404 (товар не найден/чужой).
 
-```bash
-# Генерация тестового токена (замените на реальный JWT от auth-сервиса)
-TOKEN=$(python -c "
-import jwt, uuid
-print(jwt.encode({'sub': str(uuid.uuid4())}, 'dev-secret-change-in-production', algorithm='HS256'))
-")
+**Побочные эффекты (канон B2B-2):**
+- первый SKU для `CREATED` → товар `ON_MODERATION`, событие `CREATED` в Moderation;
+- доп. SKU для `MODERATED`/`BLOCKED` → `ON_MODERATION`, событие `EDITED`;
+- события идут через outbox (`X-Service-Key` + `idempotency_key`).
 
-curl -X POST http://localhost:8000/api/v1/products \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Test Product",
-    "description": "Test Description",
-    "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-    "images": [{"url": "/s3/test.jpg", "ordering": 0}]
-  }'
-```
+### Резерв склада — `/api/v1`
 
-### Создание SKU
+| Метод | Путь | Назначение |
+|-------|------|------------|
+| POST | `/reserve` | Зарезервировать SKU (алиас `/inventory/reserve`) |
+| POST | `/unreserve` | Снять резерв (алиас `/inventory/unreserve`) |
 
-**POST** `/api/v1/skus`
+**Тело:** список позиций `{sku_id, quantity}`; проверка остатка. **Ошибки:** 401, 404 (SKU не найден), 409 (недостаточно остатка/конфликт).
 
-**Headers:**
-- `Authorization: Bearer <JWT_TOKEN>`
-- `Content-Type: application/json`
+### Корзина — `/api/v1/cart`
 
-**Тело запроса:**
-```json
-{
-  "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "name": "256GB Black",
-  "price": 12999000,
-  "cost_price": 9500000,
-  "discount": 0,
-  "image": "/s3/iphone15-black-256.jpg",
-  "characteristics": [
-    {"name": "Цвет", "value": "Чёрный"},
-    {"name": "Объём памяти", "value": "256 ГБ"}
-  ]
-}
-```
+| Метод | Путь | Назначение | Статус |
+|-------|------|------------|--------|
+| GET | `""` | Содержимое корзины | 200 |
+| POST | `/items` | Добавить/увеличить позицию (`{sku_id, quantity}`) | 201 / 200 |
+| PUT | `/items/{item_id}` | Изменить количество позиции | 200 |
+| DELETE | `/items/{item_id}` | Удалить позицию | 204 |
+| DELETE | `""` | Очистить корзину | 204 |
+| GET | `/validate` | Валидация корзины (остатки/цен) | 200 |
 
-**Обязательные поля:** `product_id` (UUID), `name` (1-255), `price` (>0 копеек), `cost_price` (>0 копеек), `image` (URL).
+**Ошибки:** 401, 404 (позиция/SKU не найдена), 409 (недоступно/недостаточно остатка).
 
-**Успешный ответ (201):**
-```json
-{
-  "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-  "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "name": "256GB Black",
-  "price": 12999000,
-  "cost_price": 9500000,
-  "discount": 0,
-  "image": "/s3/iphone15-black-256.jpg",
-  "active_quantity": 0,
-  "reserved_quantity": 0,
-  "characteristics": [
-    {"id": "char-uuid", "name": "Цвет", "value": "Чёрный"},
-    {"id": "char-uuid", "name": "Объём памяти", "value": "256 ГБ"}
-  ],
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:00Z"
-}
-```
+### Каталог — `/api/v1/catalog`
 
-**Ошибки:**
+| Метод | Путь | Назначение | Статус |
+|-------|------|------------|--------|
+| GET | `/products` | Список товаров каталога (поиск, сортировка) | 200 |
+| GET | `/products/{product_id}` | Карточка товара в каталоге | 200 |
+| GET | `/facets` | Фасеты фильтрации | 200 |
+| GET | `/categories/{category_id}/filters` | Фильтры категории | 200 |
 
-| Ситуация | Код | Тело |
-|----------|-----|------|
-| product_id не существует | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
-| Товар в статусе HARD_BLOCKED | 403 | `{"code":"FORBIDDEN","message":"Cannot add SKU to hard-blocked product"}` |
-| price <= 0 | 400 | `{"code":"INVALID_REQUEST","message":"price must be a positive integer (kopecks)"}` |
-| cost_price <= 0 | 400 | `{"code":"INVALID_REQUEST","message":"cost_price must be a positive integer (kopecks)"}` |
-| Пустой name | 400 | `{"code":"INVALID_REQUEST","message":"name is required"}` |
-| Нет image | 400 | `{"code":"INVALID_REQUEST","message":"image is required"}` |
-| Невалидный/отсутствующий JWT | 401 | `{"code":"UNAUTHORIZED","message":"..."}` |
+**Допустимые сортировки:** `rating, popularity, price_asc, price_desc, date_desc, discount_desc` (алиас `new` → `date_desc`).
+**Ошибки:** 401, 400 (невалидный sort/параметр), 404 (товар/категория не найдены), 502 (B2B недоступен — флаг `catalog_b2b_unavailable`).
 
-> **Важно:** `seller_id` проверяется через владение товаром (JWT `sub` == `product.seller_id`). Продавец не может добавить SKU к чужому товару.
+### Заказы — `/api/v1/orders`
 
-**Побочные эффекты (по канону B2B-2):**
-- **Первый SKU для товара CREATED**: товар переходит в `ON_MODERATION`, отправляется событие `CREATED` в Moderation
-- **Дополнительный SKU для MODERATED/BLOCKED**: товар переходит в `ON_MODERATION`, отправляется событие `EDITED` в Moderation
-- События идут через outbox-паттерн с `X-Service-Key` и `idempotency_key`
+| Метод | Путь | Назначение | Статус |
+|-------|------|------------|--------|
+| POST | `""` | Оформить заказ (идемпотентно по `Idempotency-Key`) | 201 |
+| POST | `/{order_id}/cancel` | Отменить заказ | 200 (`CANCELLED` / `CANCEL_PENDING`) |
 
-### Пример cURL для SKU
+**POST — тело:** позиции `{sku_id, quantity}`, адрес/получатель. **Ошибки:** 400 (валидация), 401, 409 (резерв/идемпотентность), 422 (невалидное количество), 503 (B2B недоступен — флаг `b2b_unavailable`).
+**Cancel:** 200 — `CANCELLED` (успех) или `CANCEL_PENDING` (требует подтверждения); 404 (не найден/чужой), 409 (статус не допускает отмену, тело содержит `current_status`).
 
-```bash
-curl -X POST http://localhost:8000/api/v1/skus \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "name": "256GB Black",
-    "price": 12999000,
-    "cost_price": 9500000,
-    "discount": 0,
-    "image": "/s3/iphone15-black-256.jpg",
-    "characteristics": []
-  }'
-```
+### Модерация — `/api/v1`
 
-### Просмотр карточки товара
+| Метод | Путь | Auth | Назначение |
+|-------|------|------|------------|
+| POST | `/events/moderation` | `X-Service-Key` (`mod_to_b2b_key`) | Приём события модерации (канон, `status` + `hard_block`) |
+| POST | `/moderation/events` | `X-Service-Key` (`mod_to_b2b_key`) | Приём события (OpenAPI-схема `event_type`) → 204 |
+| POST | `/products/{product_id}/approve` | JWT модератора | Одобрить товар (MOD-3) |
+| POST | `/products/{product_id}/decline` | JWT модератора | Блокировка: soft/hard по `hard_block` причины (MOD-4/MOD-5) |
+| POST | `/events/product` | `X-Service-Key` (`b2b_to_mod_key`) | B2B→Moderation: `CREATED`/`EDITED`/`DELETED` (MOD-1) |
 
-**GET** `/api/v1/products/{product_id}`
+**approve — тело:** `{moderator_comment?}`. **Ответ:** `{product_id, status:"MODERATED"}`.
+**decline — тело:** `{blocking_reason_id, moderator_comment?, field_reports?}`. **Ответ:** `{product_id, status:"BLOCKED"|"HARD_BLOCKED"}`.
 
-**Headers:**
-- `Authorization: Bearer <JWT_TOKEN>` (seller-режим, опционален)
-- `X-Service-Key: <KEY>` (service-режим, опционален)
+**Порядок предусловий decline:** 404 (нет карточки) → 409 (`HARD_BLOCKED`) → 409 (не `IN_REVIEW`) → 403 (чужой модератор) → 400 (причина не найдена).
+**Эффект:** карточка → `HARD_BLOCKED`/`BLOCKED`; событие `BLOCKED` (`hard_block`, `blocking_reason`, `field_reports`) в outbox→B2B; `Product.status` → `HARD_BLOCKED`/`BLOCKED`.
 
-Два режима доступа:
-- **Seller (JWT)** — возвращает полный payload включая `cost_price` и `reserved_quantity` у SKU.
-- **Service (`X-Service-Key`)** — если ключ совпадает с `settings.b2b_to_mod_key` или `settings.b2b_to_b2c_key`, ownership не проверяется, а `cost_price`/`reserved_quantity` возвращаются как `null`.
-
-**Успешный ответ (200):** `ProductDetailResponse`
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "seller_id": "seller-uuid",
-  "category_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "title": "iPhone 15 Pro Max",
-  "slug": "iphone-15-pro-max",
-  "description": "Latest Apple smartphone",
-  "status": "MODERATED",
-  "deleted": false,
-  "blocking_reason_id": null,
-  "moderator_comment": null,
-  "blocked": false,
-  "blocking_reason": null,
-  "field_reports": [],
-  "images": [
-    {"id": "img-uuid", "url": "/s3/iphone.jpg", "ordering": 0}
-  ],
-  "characteristics": [
-    {"id": "char-uuid", "name": "Brand", "value": "Apple"}
-  ],
-  "skus": [
-    {
-      "id": "sku-uuid",
-      "product_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "256GB",
-      "price": 120000,
-      "cost_price": 95000,
-      "discount": 5,
-      "image": "/s3/iphone.jpg",
-      "active_quantity": 10,
-      "reserved_quantity": 2,
-      "characteristics": [],
-      "created_at": "2024-01-15T10:30:00Z",
-      "updated_at": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:00Z"
-}
-```
-
-**Ошибки:**
-
-| Ситуация | Код | Тело |
-|----------|-----|------|
-| Нет Authorization и нет X-Service-Key | 401 | `{"code":"UNAUTHORIZED","message":"Authorization header is missing"}` |
-| Чужой товар (seller-режим) | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
-| Товар не существует | 404 | `{"code":"NOT_FOUND","message":"Product not found"}` |
-| Невалидный UUID | 400 | `{"code":"INVALID_REQUEST","message":"..."}` |
-
-> **Важно:** при чужом товаре в seller-режиме возвращается **404, не 403** (защита от перебора ID). `blocking_reason` собирается из `blocking_reason_id` + `moderator_comment`: `title = moderator_comment или status.value`, `comment = moderator_comment`. `field_reports` — пустой массив для MVP. `blocked = true` только для статусов `BLOCKED` / `HARD_BLOCKED`.
-
-**Пример cURL (seller-режим):**
-```bash
-curl -X GET http://localhost:8000/api/v1/products/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Пример cURL (service-режим):**
-```bash
-curl -X GET http://localhost:8000/api/v1/products/a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
-  -H "X-Service-Key: dev-b2b-to-mod-key"
-```
+**`POST /events/product`:** `EDITED` на `HARD_BLOCKED` → игнор (200); `DELETED` удаляет карточку (даже `HARD_BLOCKED`); `CREATED` создаёт `PENDING` (дубль → 400). **Ошибки:** 400 (невалидное/дубль), 401.
 
 ## Схема БД
 
-### Таблицы
+Таблицы (миграции 001–009):
 
 - **sellers** — `id (PK)`, `email`, `created_at`
 - **categories** — `id (PK)`, `name`, `parent_id (FK)`, `is_active`, `level`, `path`, `created_at`
@@ -370,70 +221,100 @@ curl -X GET http://localhost:8000/api/v1/products/a1b2c3d4-e5f6-7890-abcd-ef1234
 - **product_characteristics** — `id (PK)`, `product_id (FK)`, `name`, `value`
 - **skus** — `id (PK)`, `product_id (FK)`, `name`, `price`, `cost_price`, `discount`, `image`, `active_quantity`, `reserved_quantity`, `created_at`, `updated_at`
 - **sku_characteristics** — `id (PK)`, `sku_id (FK)`, `name`, `value`
+- **reserve_operations** — операции резерва/унрезерва (аудит склада)
+- **processed_events** — обработанные события (идемпотентность приёма модерации)
+- **product_moderation** — карточка модерации (`status`, `moderator_id`, `date_moderation`, `moderator_comment`, `blocking_reason_id`, `field_reports`)
+- **product_blocking_reasons** — справочник причин (`code`, `title`, `hard_block`); сид в 009: 3 hard (`COUNTERFEIT`, `FORBIDDEN_GOODS`, `COPYRIGHT`) + soft
+- **cart_items** — позиции корзины
+- **orders** / **order_items** — заказы (`status`, `buyer_id`, суммы, позиции)
 - **outbox_events** — `id (PK)`, `event_type`, `aggregate_id`, `payload (JSONB)`, `service_key`, `target_url`, `created_at`, `processed_at`, `retry_count`
 
-### ADR: Хранение характеристик
+### Статусы (enums)
 
-**Решение:** Отдельная таблица `product_characteristics` (нормализованная 3NF).
-
-**Рассмотренные альтернативы:**
-1. **JSONB в таблице Product** — простота, но фильтрация требует кастомных операторов (`@>`, `jsonb_path_ops`), индексы работают неэффективно.
-2. **Отдельная таблица CharacteristicValue** (выбрано) — нормализация 3NF, индексы по `(product_id, name)`, простая фильтрация через JOIN.
-3. **EAV-схема** (`entity_id`, `attribute_name`, `value`) — гибкость, но сложные self-join'ы при фильтрации, деградация производительности.
-
-**Критерии выбора:**
-- **Сложность запросов при фильтрации** — минимизирована: простой `JOIN` + `WHERE name = ... AND value = ...`, стандартные индексы работают эффективно.
-- **Удобство добавления новых характеристик** — вставка новых пар `(name, value)` не требует изменения схемы; у JSONB нет строгой схемы, у EAV — нужно управлять атрибутами отдельно.
-
-### ADR: Два режима доступа к GET /products/{id}
-
-**Решение:** Один view с проверкой `X-Service-Key` в начале обработчика. При отсутствии/неверном ключе используется seller-режим (JWT). Service-режим (Moderation/B2C) — ownership не проверяется, `cost_price`/`reserved_quantity` возвращаются как `null`.
-
-**Рассмотренные альтернативы:**
-1. Один view с проверкой `X-Service-Key` (выбрано).
-2. Два отдельных view (один с JWT, второй с `X-Service-Key` на другом пути/теге).
-3. Отдельный permission-класс/dependencies для переключения режима.
-
-**Критерии выбора:**
-- **Читаемость кода** — единый endpoint, логика режима в одном месте, проще поддерживать OpenAPI (один path).
-- **Риск утечки чувствительных полей** — явная проверка `X-Service-Key` в начале обработчика; два view удваивают код и риск рассинхронизации схем.
+- **ProductStatus:** `CREATED`, `ON_MODERATION`, `MODERATED`, `BLOCKED`, `HARD_BLOCKED`
+- **OrderStatus:** `CREATED`, `PAID`, `ASSEMBLING`, `DELIVERING`, `DELIVERED`, `CANCELLED`, `CANCEL_PENDING`
+- **ModerationStatus:** `PENDING`, `IN_REVIEW`, `MODERATED`, `BLOCKED`, `HARD_BLOCKED`
 
 ## Переменные окружения
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/neomarket` | Async строка подключения к PostgreSQL |
-| `JWT_SECRET` | `dev-secret-change-in-production` | Секрет для подписи JWT |
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/neomarket` | Async-строка подключения к PostgreSQL |
+| `JWT_SECRET` | `dev-secret-change-in-production` | Секрет подписи JWT |
 | `JWT_ALGORITHM` | `HS256` | Алгоритм JWT |
 | `JWT_EXPIRES_MINUTES` | `30` | Время жизни токена |
 | `APP_HOST` | `0.0.0.0` | Хост сервера |
 | `APP_PORT` | `8000` | Порт сервера |
 | `DEBUG` | `false` | Режим отладки (SQL echo) |
 | `MODERATION_SERVICE_URL` | `http://moderation:8000` | URL сервиса Moderation |
-| `B2B_TO_MOD_KEY` | `dev-b2b-to-mod-key` | Service key для B2B→Moderation |
+| `B2B_TO_MOD_KEY` | `dev-b2b-to-mod-key` | Service-key B2B→Moderation |
+| `MOD_TO_B2B_KEY` | `dev-mod-to-b2b-key` | Service-key Moderation→B2B |
+| `B2B_SERVICE_URL` | `http://b2b:8000` | URL сервиса B2B (для доставки событий Moderation) |
 | `B2C_SERVICE_URL` | `http://b2c:8000` | URL сервиса B2C |
-| `B2B_TO_B2C_KEY` | `dev-b2b-to-b2c-key` | Service key для B2B→B2C |
+| `B2B_TO_B2C_KEY` | `dev-b2b-to-b2c-key` | Service-key B2B→B2C |
+| `CATALOG_B2B_UNAVAILABLE` | `false` | Имитация недоступности B2B для каталога (тесты/ops) |
+| `B2B_UNAVAILABLE` | `false` | Имитация недоступности B2B для checkout (тесты/ops) |
+
+## Архитектурные решения (ADR)
+
+### Хранение характеристик
+Отдельная таблица `product_characteristics` (нормализация 3NF): простая фильтрация через `JOIN` + `WHERE name = ... AND value = ...`, эффективные стандартные индексы по `(product_id, name)`. Альтернативы (JSONB, EAV) отвергнуты — сложнее запросы/сопровождение.
+
+### Два режима доступа к `GET /products/{id}`
+Один view с проверкой `X-Service-Key` в начале обработчика: service-режим не проверяет ownership и скрывает `cost_price`/`reserved_quantity` (`null`); иначе — seller-режим по JWT. Альтернатива с двумя view отвергнута — риск рассинхронизации и удвоение кода.
+
+### Outbox-паттерн для событий
+События в Moderation/B2C публикуются через таблицу `outbox_events` с `idempotency_key`, что гарантирует доставку и защиту от дублей при ретраях.
+
+### Терминальная блокировка `HARD_BLOCKED`
+Терминальный enum-статус + проверки на всех мутирующих endpoint'ах (PATCH/DELETE товара, POST SKU → 403) как единый источник правды. Moderation ставит `HARD_BLOCKED` только из `IN_REVIEW`, игнорирует `EDITED`, удаляет по `DELETED`. Снятие — только суперадмин через Django Admin (вне скоупа MVP). Альтернативы (флаг `is_terminal`, отдельная таблица-архив) отвергнуты — риск рассинхронизации и сложность аудита.
 
 ## Definition of Done (DoD)
 
-### B2B-1: Создание товара
-- [x] `pytest tests/test_products.py -k "create_product_returns_201 or seller_id_taken or missing_images or missing_category"` — канонические тесты товаров проходят
-- [x] `seller_id` берётся только из JWT `sub` (защита от IDOR)
+### B2B-1: Создание товара — `test_products.py`
+- [x] `create_product_returns_201`, `seller_id_taken`, `missing_images`, `missing_category` — канонические тесты
+- [x] `seller_id` только из JWT `sub` (защита от IDOR)
 
-### B2B-2: Создание SKU
-- [x] `pytest tests/test_skus.py -k "first_sku_transitions_product_to_on_moderation or first_sku_emits_created_event_to_moderation or second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited or add_sku_to_hard_blocked_returns_403 or missing_image_returns_400"` — канонические тесты SKU проходят
+### B2B-2: Создание SKU — `test_skus.py`
+- [x] `first_sku_transitions_product_to_on_moderation`, `first_sku_emits_created_event_to_moderation`, `second_sku_transitions_moderated_product_to_on_moderation_and_emits_edited`, `add_sku_to_hard_blocked_returns_403`, `missing_image_returns_400`
 - [x] Товар без SKU не уходит на модерацию (ответственность B2B-2)
-- [x] ADR: outbox-паттерн для событий в Moderation
 
-### B2B-5: Просмотр карточки товара
-- [x] `pytest tests/test_products.py -k "get_moderated or get_blocked or get_others or get_nonexistent"` — зелёный
+### B2B-5: Просмотр карточки товара — `test_products.py`
+- [x] `get_moderated`, `get_blocked`, `get_others`, `get_nonexistent`
 - [x] Чужой товар → 404 (не 403)
 - [x] `cost_price`/`reserved_quantity` только в seller-режиме
-- [x] ADR: два режима доступа (один view с `X-Service-Key`)
+
+### B2C-3: Карточка товара для B2C — `test_product_card.py`
+- [x] 5 тестов: отображение, скрытие `cost_price`/`reserved_quantity` в B2C-режиме, 404/403-семантика
+
+### Каталог — `test_catalog.py`
+- [x] 6 тестов: поиск, сортировки (вкл. `new`), фасеты, фильтры категории, 502 при недоступности B2B
+
+### Корзина — `test_cart.py`
+- [x] 7 тестов: получение, добавление (201/200), изменение, удаление, очистка, валидация, 404/409
+
+### Резерв склада — `test_inventory.py`
+- [x] 8 тестов: reserve/unreserve (канон + алиасы), остатки, 404/409
+
+### Заказы — `test_orders.py`, `test_order_cancel.py`
+- [x] 10 тестов оформления: создание, идемпотентность, 400/409/422/503
+- [x] 6 тестов отмены: `CANCELLED`/`CANCEL_PENDING`, 404/409
+
+### Модерация: приём событий — `test_moderation.py`
+- [x] 8 тестов: `POST /events/moderation` и `/moderation/events`, идемпотентность, `hard_block`, 404/401
+
+### Модерация: одобрение (MOD-3) — `test_moderation_approve.py`
+- [x] 8 тестов: approve → `MODERATED`, каскад в B2C, 404/403/409
+
+### Модерация: жёсткая блокировка (MOD-5) — `test_moderation_hard_block.py`
+- [x] `hard_block_transitions_to_terminal_and_emits_event`
+- [x] `hard_block_event_carries_hard_block_true`
+- [x] `any_modify_on_hard_blocked_returns_403` (PATCH/DELETE товара + POST SKU)
+- [x] `edited_event_on_hard_blocked_is_ignored`
+- [x] `deleted_event_removes_hard_blocked`
+- [x] soft-block → `BLOCKED`; повторный decline → 409; чужой модератор → 403; неизвестная причина → 400
 
 ### Общее
-- [x] `pytest tests/ -v` — все 23 теста проходят
-- [x] Приложение стартует в `docker-compose up`, `POST /api/v1/products` возвращает 201 со статусом `CREATED`, `POST /api/v1/skus` возвращает 201
-- [x] Нет предупреждений pytest
-- [x] ADR в описании PR с обоснованием выбора хранения характеристик
-- [x] ADR в описании PR с обоснованием выбора outbox-паттерна для событий
+- [x] `pytest` — 95 тестов проходят
+- [x] Приложение стартует в `docker-compose up`; create product/sku → 201
+- [x] `ruff` по изменённым файлам — только принятый базовый уровень (B008/TRY003)
